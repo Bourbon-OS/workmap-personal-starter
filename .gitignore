@@ -1,0 +1,13 @@
+# Local current state and company/user records must not enter the source repo.
+/data/
+/docs/work-management/evidence/
+/backups/
+/recovery*/
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+__pycache__/
+*.py[cod]
+.env
+.env.*
