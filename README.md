@@ -158,6 +158,8 @@ AIが日常的に読む・判断する・更新することを初めから考え
 
 AIと一緒に使う場合は、このPCの保存データと同梱コマンドを扱える環境が必要です。
 
+AIに利用を頼む時は、[AI向けの初回案内](AI_FIRST_USE.md)と、対象Map・担当・許可範囲を渡してください。読み始め方と、Map・Thread・結果記録の使い分けを説明しています。
+
 1. [Releases](https://github.com/Bourbon-OS/workmap-personal-starter/releases)の最新の公開版から、`WorkMap_Personal_Local_Trial_<版>.zip`をダウンロードし、同期対象外のローカルフォルダへ展開する。
 2. Python 3.11以上と、画面表示に使う標準機能のTkinterを用意する。確認方法は[手順書](USAGE.md#最初にすること)にあります。追加ライブラリやAIサービス契約は不要です。
 3. [初期設定](USAGE.md#最初にすること)のコマンド例を自分の目的ときっかけに合わせて実行し、最初のWorkを作る。
