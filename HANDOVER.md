@@ -22,6 +22,8 @@ Work Mapは現在存在する目的を持つ対象と関係・現在地から次
 
 ## 構成
 
+公開版v0.2.1と、保存データの形式番号0.4.2は別のものです。利用者向けの案内では公開版を使い、保存形式を扱う実装・互換性の判断でだけ形式番号を使います。旧0.4.1形式のデータ移行は未確認です。
+
 | 場所 | 役割 |
 |---|---|
 | workmap.py | 個人用の薄い起動入口。既存Coreへ接続 |
@@ -39,11 +41,34 @@ GUIの表示・編集・Work追加・自動更新は既存実装を再利用す�
 
 permitは既存set_permissionの薄い入口であり新しい権限モデルではない。Work単位の編集・記録・Pin・closeを明示し、Map全体の新規追加だけは既存add_work_in_mapのproject・root・絶対パス束縛を用いる。対象操作に必要な許可やunknownの扱いを省略しない。
 
+明示されたOwner登録指示による一件の追加でも、既知の有効なMap追加禁止は解除されない。USAGEの平易な説明でこの検査の例外を認めたとは扱わない。
+
 通常のPin切替は、今回のOwner指示から必要な一時Permissionを保存・使用・終了する既存経路も使う。常設permitを毎回要求するものではない。初回も関連する現在文脈を確認し、Pinの引受から本作業の許可を推測しない。
+
+既存activeからの切替と対象heldへの復帰では、必要な一時許可を既存経路で扱う。activeがなく、別のheldから新しい対象を引き受ける場合は初回経路になる。対象Workを初めて選ぶかだけで一律にpermitの要否を分けない。
+
+編集者の既定IDは`actor:local-owner`。`--actor`だけを変更しても、そのIDに既存許可は移らない。CLIの`owner_source`は本人の実際の指示を文書として保存する機能で、本人認証や、AIが指示を捏造できないという保証ではない。
+
+接続一覧は配布フォルダの`data/viewer-session.json`へ保存する。開発環境やCodexの一覧は取得しない。フォルダの移動・複製では、同じprojectの旧保存先を自動接続せず、当該フォルダの正本を優先する。独立した別Mapの一覧を保持する。複製を二つの更新正本として並行利用しない。
+
+GUIのWork追加は現在、`docs`内の根拠ファイルを必須とする。CLIのaddは登録指示からその文書を作るため、人間の通常追加には入力負担の差がある。画面内の本人入力と反映確認から既存の根拠記録を作る案は、次の実装検討である。今回の文書修正で、この機能が実装済みになったとは扱わない。
 
 保存済み要求は、CLIの`init`／`add`なら`resume-add --request`、Pin・理由・結果・許可・close等の対応するCLI要求なら`resume --request`から既存の回収処理へ渡す。[応答不明時の手順](USAGE.md#応答が分からなくなったとき)で形式と操作を区別し、GUI要求をこのCLIへ流用しない。復旧は`recover-check`、候補専用読取`recovery-show`、元データ保全後の`restore`で行う。既存DBやSQLite付随ファイルには上書きせず、選んだbackup・候補・projectと根拠を再確認して新revisionで再開する。候補やバックアップを第二の編集正本にしない。外部Artifactの実体や失われた後続更新の完全回復は保証しない。
 
 CoreとStore adapterの境界は維持する。現在のSQLite採用を将来の全環境へ固定しない。共有ドライブやクラウド同期へDBを置くだけでチーム利用成立とはしない。
+
+## 同じ版の記録を絞り込んで読む
+
+通常の閲覧はUSAGEの画面とコマンドを使う。AIや独自連携が、先に得た索引と同じ版から本文一件を追加取得する時だけ、以下を使う。
+
+返答の`retrieve`や省略説明にある`--entry`、`--evidence`、`--expected-revision`は、`tools.read_workmap_store`用で、`workmap.py`の引数ではない。配布フォルダから実行する。
+
+```powershell
+$env:PYTHONPATH = "$PWD;$PWD/src"
+python -X utf8 -m tools.read_workmap_store --backend sqlite --store "$PWD/data/workmap.sqlite3" --expected-project "実際のproject_id" --evidence-repo "$PWD" --work W1 --thread --entry "索引の理由ID" --expected-revision "briefのrevision"
+```
+
+`project_id`と`revision`はこのMapのshow／briefの返答から、IDはその索引から取る。開発projectのIDを流用しない。結果なら`--thread`を`--evidence`へ、IDを結果IDへ替える。版が違えば現在情報から読み直して再判断する。Pin出典など同じ版の詳細を読む時は`--thread --entry …`を外し、`--brief`を付けない。この取得でも許可・unknownの検査は維持する。
 
 ## 最初に伸ばす部分
 

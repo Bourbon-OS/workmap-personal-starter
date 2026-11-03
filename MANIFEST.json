@@ -2,14 +2,18 @@
   "purpose": "personal local trial; source included; no live project data",
   "files": {
     ".gitignore": "54c18ce80e83971950d6e33ecb6860b8df293919012b8a04187ea7c8424c5a91",
-    "check.py": "af1dd410784a6e8a477cba2a08f0678dbf5abe84751b712ae2a20c0d8cb54b1d",
-    "docs/work-management/PIN_ROUTINE_ENTRY_2026-10-02.md": "83218394221b3dd90063748d48a4c2dad2d83c21f7092638017143dcde2bfbae",
-    "HANDOVER.md": "4eb65fce6fb0f31f25b28854d14b59187df49f3d500274bb6c9f703fd1dbdb2b",
+    "HANDOVER.md": "2cc8d9ef6116be44c0ebd917bbd5fe77a213f9f6974896c15d45efd6bb55c0ff",
     "LICENSE": "27a5e029533d0c145bbd3436b4849fe76a2097cc59c0f6d9e69e9ecc3e0f9979",
     "LICENSE-DOCS.md": "20228ed1f60c4c0201bdc7c5eca2d5318dca82eb9dc51c8fd5faf0b92e9b8f86",
+    "NAME_ORIGIN.md": "e2d9778afc942cc34ae47e89b858f266f6073953411a720b687e7169a511c73a",
     "NOTICE.md": "2e6dde8e2ae7afdaf95c12b9b8b7f823d77cad580893fb80ca15af6c1236cc90",
-    "README.md": "8b4527f5e4b288ca801a4a879ff3d726a101dd2656c190af057ccaf2809f3c83",
-    "RELEASE_NOTES.md": "0eb2ecc0558539b6f3f466dbeadbece24425548cf2c30829d8653b3e1bc0ea4c",
+    "README.md": "863b9744c122637acdc0be68f9aa90682953c37376fa8ec969e4f2d238489b63",
+    "RELEASE_NOTES.md": "e96e0c5a73d90fe5dd01f2b40573fc8e416d4f041b850184c2425fe29f3702ad",
+    "USAGE.md": "936459c18a8394b56683df330c73135a5d7be7b9125e7b8305069995e0920c70",
+    "WorkMap.pyw": "c9ef50ce11e2c6e9716d0007779b70053d49745963d686233c5464173fc2da81",
+    "check.py": "af1dd410784a6e8a477cba2a08f0678dbf5abe84751b712ae2a20c0d8cb54b1d",
+    "docs/images/booklet-map-thread.jpg": "0240646eca99c2f69595226c424d859792a84ef1f768b8681d9f1fb45c6f83e7",
+    "docs/work-management/PIN_ROUTINE_ENTRY_2026-10-02.md": "83218394221b3dd90063748d48a4c2dad2d83c21f7092638017143dcde2bfbae",
     "src/pma/__init__.py": "a584e6c19f7fdf574324a83643642c8190e5b3074704e25c77dc1c32c0348b06",
     "src/pma/assets/workmap.ico": "27239980a316d252ac0181e6b5193ec608369b6c6124f666f852ce5469cb470e",
     "src/pma/assets/workmap.png": "966749f0cc83e755f9433d5e5b531c03bdbc7b53ac699727ddc02a9b32b94791",
@@ -60,23 +64,27 @@
     "tools/run-tests.ps1": "3aa34a72c64bc0a8416314c0d765f62b03efa971a5006ccf2725dd71e752eea7",
     "tools/workmap_pin_inputs.py": "64d1ded5cb5265f4207b4aa1ff4525383ed5eca659069bb1536435cc6ff56076",
     "tools/workmap_pin_workflow.py": "0137c4706d32519a1b030686ca3f9de1e18f13e073dc79cf34fb69f05b4be794",
-    "USAGE.md": "4f122b843bd2646dd4c3bfc11fd6bf8388be5e51c3089d2f059fde04b90a706f",
-    "workmap.py": "a76e3372abe538c94ce4952f548c572583597dfffc97391e2ab5316f7a89c49b",
-    "WorkMap.pyw": "c9ef50ce11e2c6e9716d0007779b70053d49745963d686233c5464173fc2da81"
+    "workmap.py": "a76e3372abe538c94ce4952f548c572583597dfffc97391e2ab5316f7a89c49b"
   },
   "distribution": {
     "product": "Work Map / Work Thread Personal Local Trial",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "stage": "trial",
-    "source_artifact_sha256": "70970a90c31cececf4229588763e176d7812cc20b69a4c9615c91c88cec9e1a3",
-    "previous_public_version": "0.1.0",
-    "previous_public_commit": "b035239d2058f262a5c33e506ab6e19ba2b1a371",
+    "source_artifact_sha256": "1add77f5c0f1ceae289735cdd4a46ff539d1995e91c3622fcef38b0bde779d9f",
+    "previous_public_version": "0.2.0",
+    "previous_public_commit": "8e623e4db03c4afc2aa0ecd7e83b847b179a224a",
     "packaging_changes": [
       {
+        "path": "HANDOVER.md",
+        "source_sha256": "d2850088ae31363a9086418f0263f0b0587f493522cd6ac40ef6568cd2b03d60",
+        "sha256": "2cc8d9ef6116be44c0ebd917bbd5fe77a213f9f6974896c15d45efd6bb55c0ff",
+        "reason": "only public-version token v0.2.0 to v0.2.1"
+      },
+      {
         "path": "RELEASE_NOTES.md",
-        "source_sha256": "7f609ae6990e122a52de738df2ee1dd1533f5f813761cefd07509ebf6b07aa26",
-        "sha256": "0eb2ecc0558539b6f3f466dbeadbece24425548cf2c30829d8653b3e1bc0ea4c",
-        "reason": "release wording only; capabilities and unverified limits unchanged"
+        "source_sha256": "91c1a4080f80cecfca0ddff5db2d319207c9b7032150f5600fb66f1e779b8aa5",
+        "sha256": "e96e0c5a73d90fe5dd01f2b40573fc8e416d4f041b850184c2425fe29f3702ad",
+        "reason": "public version and complete documentation-update description"
       }
     ]
   }
