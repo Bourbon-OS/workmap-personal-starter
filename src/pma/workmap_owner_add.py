@@ -82,7 +82,7 @@ def verify_owner_add_sources(review: ReviewedOwnerAdd) -> None:
         raise TransitionDenied('Owner registration source changed after review') from exc
 
 
-def validate_owner_add(snapshot: dict, request: dict, review: ReviewedOwnerAdd) -> None:
+def validate_owner_add(snapshot: dict, request: dict, review: ReviewedOwnerAdd, *, store_path=None) -> None:
     """Allow just this addition while leaving incomplete collections intact."""
     if not isinstance(review, ReviewedOwnerAdd) or review.request_digest != _digest(request):
         raise TransitionDenied('Owner registration review does not match request')
@@ -109,8 +109,13 @@ def validate_owner_add(snapshot: dict, request: dict, review: ReviewedOwnerAdd) 
            and 'add_work' in p['operations'] and p['effect'] != 'allow'
            for p in snapshot['map']['permissions']):
         raise TransitionDenied('known denial must be resolved before registration')
-    if any(chain.intersection(c['targets']) for c in snapshot['map']['conditions']):
-        raise TransitionDenied('known Parent Conditions require separate assessment')
+    if not is_root_add(change):
+        from pma.workmap_map_permission import map_add_permissions
+        if any(p['effect'] != 'allow' for p in map_add_permissions(
+                snapshot, change['target'], request['actor_id'], store_path=store_path)):
+            raise TransitionDenied('known Map-wide registration denial must be resolved')
+    if any(chain.intersection(c['targets']) for c in snapshot['map']['action_rules']):
+        raise TransitionDenied('known Parent Action Rules require separate assessment')
     work = change['value']['work']
     if set(work) != {'work_key', 'name', 'intent', 'origin'}:
         raise TransitionDenied('registration may only add Work identity and meaning')

@@ -63,8 +63,8 @@ def review_owner_handoff(request: dict) -> ReviewedOwnerHandoff:
     return ReviewedOwnerHandoff(_digest(request), tuple(refs))
 
 
-def review_owner_intent(request: dict) -> ReviewedOwnerIntent:
-    """Bind bytes after review of Owner attribution, same Work, and Conditions.
+def review_owner_intent(request: dict, repo: Path | None = None) -> ReviewedOwnerIntent:
+    """Bind bytes after review of Owner attribution, same Work, and Action Rules.
 
     The operator must assess meaning; a kind label or matching hash cannot do
     that. This uses the existing cooperating local OS boundary, not new auth.
@@ -80,7 +80,7 @@ def review_owner_intent(request: dict) -> ReviewedOwnerIntent:
     sources = detail.get("owner_sources")
     if not isinstance(sources, list) or not sources:
         raise TransitionDenied("Owner Intent evidence is missing")
-    repo = Path(__file__).resolve().parents[1]
+    repo = (repo or Path(__file__).resolve().parents[1]).resolve()
     refs = []
     for source in sources:
         if not isinstance(source, dict) or set(source) != {"ref", "sha256"}:
@@ -183,27 +183,49 @@ def review_owner_scope(request: dict) -> ReviewedOwnerScope:
 def review_pin_move(request: dict) -> ReviewedPinMove:
     """Bind the local operator's semantic review to this request, without a grant."""
     changes = request.get("changes") if isinstance(request, dict) else None
+    from pma.workmap_pin_move import is_held_reactivation
     if (not isinstance(changes, list) or len(changes) != 1
-            or not isinstance(changes[0], dict) or changes[0].get("op") != "move_active_pin"):
+            or not isinstance(changes[0], dict)
+            or not (changes[0].get("op") == "move_active_pin" or is_held_reactivation(request))):
         raise TransitionDenied("Pin move review requires one own-actor move")
     return ReviewedPinMove(_digest(request))
 
 
 def _apply_request(store_path: Path, request: dict, *, reviewed_owner_handoff: bool = False,
                    reviewed_owner_intent: bool = False, reviewed_delegation: bool = False,
-                   reviewed_dependency_disposition: bool = False, reviewed_owner_scope: bool = False, reviewed_pin_move: bool = False, reviewed_close: bool = False, reviewed_owner_add: bool = False, reviewed_owner_permission: bool = False, backend: str = 'text', context_assessments: dict | None = None) -> dict:
-    if sum((reviewed_owner_handoff, reviewed_owner_intent, reviewed_delegation, reviewed_dependency_disposition, reviewed_owner_scope, reviewed_pin_move, reviewed_close, reviewed_owner_add, reviewed_owner_permission, context_assessments is not None)) > 1:
+                   reviewed_dependency_disposition: bool = False, reviewed_owner_scope: bool = False, reviewed_pin_move: bool = False, reviewed_close: bool = False, reviewed_owner_add: bool = False, reviewed_owner_permission: bool = False, backend: str = 'text', context_assessments: dict | None = None, evidence_repo: Path | None = None) -> dict:
+    if sum((reviewed_owner_handoff, reviewed_owner_intent, reviewed_delegation, reviewed_dependency_disposition, reviewed_owner_scope, reviewed_pin_move, reviewed_close, reviewed_owner_add, reviewed_owner_permission)) > 1:
         raise TransitionDenied("review exactly one semantic operation")
+    if context_assessments is not None and any((reviewed_owner_handoff, reviewed_delegation,
+            reviewed_dependency_disposition, reviewed_owner_scope,
+            reviewed_close, reviewed_owner_add)):
+        raise TransitionDenied("combined context review is limited to Owner Permission, Intent revision or own Pin move")
+    # The selected Map's documents also resolve an explicitly reviewed Intent.
+    # This selects evidence bytes, never Owner identity or a write destination.
+    # Core still checks every operation's permission.
+    selection_repo = Path(evidence_repo) if evidence_repo is not None else Path(__file__).resolve().parents[1]
+    if not selection_repo.is_absolute():
+        raise ValueError('selection Evidence root must be an absolute path')
     store = open_store(store_path, backend)
+    changes = request.get('changes') if isinstance(request, dict) else None
+    if (isinstance(changes, list) and len(changes) == 1
+            and isinstance(changes[0], dict)
+            and changes[0].get('op') == 'adopt_action_rules'):
+        # The explicit Core migration validates the former source before
+        # publishing a current-format snapshot. Ordinary requests below keep
+        # the strict current-format validation and all existing review inputs.
+        if context_assessments is not None:
+            raise ValueError('format adoption does not accept unknown-context overrides')
+        return CanonicalWorkMapCore(store).apply(request)
     current = validate_snapshot(store.read().snapshot)
     if current["metadata"].get("store_role") != "canonical_current":
         raise ValueError("target is not the declared canonical Store")
     try:
-        validate_publication(current, request, Path(__file__).resolve().parents[1])
+        validate_publication(current, request, selection_repo)
     except SelectionUnavailable as exc:
         raise TransitionError(str(exc)) from exc
     review = review_owner_handoff(request) if reviewed_owner_handoff else None
-    intent_review = review_owner_intent(request) if reviewed_owner_intent else None
+    intent_review = review_owner_intent(request, selection_repo) if reviewed_owner_intent else None
     delegation_review = review_delegation(request, Path(__file__).resolve().parents[1]) if reviewed_delegation else None
     dependency_review = review_dependency_disposition(request) if reviewed_dependency_disposition else None
     scope_review = review_owner_scope(request) if reviewed_owner_scope else None
@@ -222,16 +244,16 @@ def _apply_request(store_path: Path, request: dict, *, reviewed_owner_handoff: b
 
 def apply_file(store_path: Path, transition_path: Path, *, reviewed_owner_handoff: bool = False,
                reviewed_owner_intent: bool = False, reviewed_delegation: bool = False,
-               reviewed_dependency_disposition: bool = False, reviewed_owner_scope: bool = False, reviewed_pin_move: bool = False, reviewed_close: bool = False, reviewed_owner_add: bool = False, reviewed_owner_permission: bool = False, backend: str = 'text', context_assessments: dict | None = None) -> dict:
+               reviewed_dependency_disposition: bool = False, reviewed_owner_scope: bool = False, reviewed_pin_move: bool = False, reviewed_close: bool = False, reviewed_owner_add: bool = False, reviewed_owner_permission: bool = False, backend: str = 'text', context_assessments: dict | None = None, evidence_repo: Path | None = None) -> dict:
     request = json.loads(transition_path.read_text(encoding="utf-8"))
     return _apply_request(store_path, request, reviewed_owner_handoff=reviewed_owner_handoff,
                           reviewed_owner_intent=reviewed_owner_intent, reviewed_delegation=reviewed_delegation,
-                          reviewed_dependency_disposition=reviewed_dependency_disposition, reviewed_owner_scope=reviewed_owner_scope, reviewed_pin_move=reviewed_pin_move, reviewed_close=reviewed_close, reviewed_owner_add=reviewed_owner_add, reviewed_owner_permission=reviewed_owner_permission, backend=backend, context_assessments=context_assessments)
+                          reviewed_dependency_disposition=reviewed_dependency_disposition, reviewed_owner_scope=reviewed_owner_scope, reviewed_pin_move=reviewed_pin_move, reviewed_close=reviewed_close, reviewed_owner_add=reviewed_owner_add, reviewed_owner_permission=reviewed_owner_permission, backend=backend, context_assessments=context_assessments, evidence_repo=evidence_repo)
 
 
 def apply_result(store_path: Path, transition_path: Path, *, reviewed_owner_handoff: bool = False,
                  reviewed_owner_intent: bool = False, reviewed_delegation: bool = False,
-                 reviewed_dependency_disposition: bool = False, reviewed_owner_scope: bool = False, reviewed_pin_move: bool = False, reviewed_close: bool = False, reviewed_owner_add: bool = False, reviewed_owner_permission: bool = False, backend: str = 'text', context_assessments: dict | None = None) -> dict:
+                 reviewed_dependency_disposition: bool = False, reviewed_owner_scope: bool = False, reviewed_pin_move: bool = False, reviewed_close: bool = False, reviewed_owner_add: bool = False, reviewed_owner_permission: bool = False, backend: str = 'text', context_assessments: dict | None = None, evidence_repo: Path | None = None) -> dict:
     """Return a success receipt or an ephemeral structured failure.
 
     No failure receipt or Thread is written. I/O ambiguity is unknown, never a
@@ -242,7 +264,7 @@ def apply_result(store_path: Path, transition_path: Path, *, reviewed_owner_hand
         request = json.loads(transition_path.read_text(encoding="utf-8"))
         return _apply_request(store_path, request, reviewed_owner_handoff=reviewed_owner_handoff,
                               reviewed_owner_intent=reviewed_owner_intent, reviewed_delegation=reviewed_delegation,
-                              reviewed_dependency_disposition=reviewed_dependency_disposition, reviewed_owner_scope=reviewed_owner_scope, reviewed_pin_move=reviewed_pin_move, reviewed_close=reviewed_close, reviewed_owner_add=reviewed_owner_add, reviewed_owner_permission=reviewed_owner_permission, backend=backend, context_assessments=context_assessments)
+                              reviewed_dependency_disposition=reviewed_dependency_disposition, reviewed_owner_scope=reviewed_owner_scope, reviewed_pin_move=reviewed_pin_move, reviewed_close=reviewed_close, reviewed_owner_add=reviewed_owner_add, reviewed_owner_permission=reviewed_owner_permission, backend=backend, context_assessments=context_assessments, evidence_repo=evidence_repo)
     except ContextUnknown as exc:
         result, category, reason = "rejected", "context_unknown", str(exc)
     except TransitionDenied as exc:
@@ -270,24 +292,35 @@ def main() -> None:
     parser.add_argument("--store", type=Path, required=True)
     parser.add_argument("--transition", type=Path, required=True)
     parser.add_argument("--backend", choices=("text", "sqlite"), default="text")
+    parser.add_argument('--evidence-repo', type=Path,
+                        help='Absolute root resolving Thread selection and explicitly reviewed Intent evidence; grants no authority')
+    parser.add_argument("--context-assessments", type=Path,
+                        help="Exact operation-bound scope/unknown assessments; required for declared note working context, optional with Owner Permission or Intent review")
     review_group = parser.add_mutually_exclusive_group()
     review_group.add_argument("--reviewed-owner-handoff", action="store_true",
                         help="Local operator has reviewed Owner attribution and exact handoff scope; not Owner authentication")
     review_group.add_argument("--reviewed-owner-intent", action="store_true",
-                        help="Local operator reviewed Owner attribution, purpose continuity, exact Intent and Conditions; not semantic proof or Owner authentication")
+                        help="Local operator reviewed Owner attribution, purpose continuity, exact Intent and Action Rules; not semantic proof or Owner authentication")
     review_group.add_argument("--reviewed-delegation", action="store_true",
                         help="Operator reviewed exact Owner scope and actual runtime acceptance/completion; dispatch alone is insufficient; not authentication")
     review_group.add_argument("--reviewed-dependency-disposition", action="store_true",
                         help="Operator reviewed exact Owner removal scope or fulfillment against this dependency; hashes are not authentication or semantic proof")
     review_group.add_argument("--reviewed-owner-scope", action="store_true", help="Operator reviewed exact fresh Owner scope and actual actor acceptance; unknown collections remain unknown")
-    review_group.add_argument("--reviewed-pin-move", action="store_true", help="Operator checked own acceptance, current grant constraints, Conditions, dependencies and shared WHERE; grants no permission")
+    review_group.add_argument("--reviewed-pin-move", action="store_true", help="Operator checked own acceptance, current grant constraints, Action Rules, dependencies and shared WHERE; grants no permission")
     review_group.add_argument("--reviewed-close", action="store_true", help="Operator reviewed this bound close basis: Intent/outcome, residuals, grants and evidence; no new Owner approval")
     review_group.add_argument("--reviewed-owner-add", action="store_true", help="Operator reviewed exact Owner instruction for one Work registration only; adds no Permission or Pin")
     review_group.add_argument("--reviewed-owner-permission", action="store_true", help="Operator reviewed the actual Owner instruction for this exact existing Permission; not authentication")
     args = parser.parse_args()
+    try:
+        assessments = (json.loads(args.context_assessments.read_text(encoding='utf-8'))
+                       if args.context_assessments is not None else None)
+    except (OSError, ValueError, UnicodeError):
+        print(json.dumps({'result': 'rejected', 'category': 'invalid_input',
+                          'reason': 'context assessments are unreadable'}, ensure_ascii=False))
+        sys.exit(2)
     result = apply_result(args.store, args.transition, reviewed_owner_handoff=args.reviewed_owner_handoff,
                           reviewed_owner_intent=args.reviewed_owner_intent, reviewed_delegation=args.reviewed_delegation,
-                          reviewed_dependency_disposition=args.reviewed_dependency_disposition, reviewed_owner_scope=args.reviewed_owner_scope, reviewed_pin_move=args.reviewed_pin_move, reviewed_close=args.reviewed_close, reviewed_owner_add=args.reviewed_owner_add, reviewed_owner_permission=args.reviewed_owner_permission, backend=args.backend)
+                          reviewed_dependency_disposition=args.reviewed_dependency_disposition, reviewed_owner_scope=args.reviewed_owner_scope, reviewed_pin_move=args.reviewed_pin_move, reviewed_close=args.reviewed_close, reviewed_owner_add=args.reviewed_owner_add, reviewed_owner_permission=args.reviewed_owner_permission, backend=args.backend, context_assessments=assessments, evidence_repo=args.evidence_repo)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     if result.get("result") != "applied":
         sys.exit(2)

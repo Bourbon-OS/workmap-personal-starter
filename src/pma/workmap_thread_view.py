@@ -1,4 +1,4 @@
-"""Meaning-only Work Thread projection over preserved 0.4.1 raw records.
+"""Meaning-only Work Thread projection over preserved 0.4.2 raw records.
 
 Selection is reviewed Evidence referenced by a committed record, not another
 editable Map. Hashes bind both the Evidence bytes and each source record.
@@ -24,15 +24,17 @@ CRITERION = "future_decision_why"
 TECHNICAL_KINDS = frozenset({"pin_added", "pin_changed", "pin_removed", "pin_moved",
     "active_pin_moved", "pin_active_moved", "handoff", "permission_changed", "delegation_accepted",
     "delegation_finished", "dependency_disposition_authorized", "owner_scope_accepted",
-    "owner_scope_renewed", "evidence_recorded", "work_renamed", "work_added"})
+    "owner_scope_renewed", "evidence_recorded", "work_renamed", "work_added",
+    "scope_released", "scope_accepted", "action_rule_changed"})
 MEANING_KINDS = frozenset({"rationale_added", "correction", "intent_confirmation",
     "intent_correction", "intent_refinement", "close", "reopen", "reparent"})
 
 
-def direct_meaning(entry: dict) -> dict:
+def direct_meaning(entry: dict, *, reference_fields: bool = True) -> dict:
     """An explicitly authored reason is available while the Work is alive."""
     result = {k: copy.deepcopy(entry[k]) for k in ("id", "works", "summary", "why", "source_refs")}
     result["related_entries"] = [entry["id"]]
+    _preserve_references(result if reference_fields else copy.deepcopy(result), [entry])
     if entry.get("evidence_refs"):
         result["source_refs"] = list(dict.fromkeys(result["source_refs"] + entry["evidence_refs"]))
     if entry["kind"] == "rationale_added" and entry.get("consequence"):
@@ -57,6 +59,27 @@ class SelectionUnavailable(ValueError):
     pass
 
 
+def _preserve_references(result: dict, sources: list[dict]) -> None:
+    """Keep authored links and close context without importing linked prose."""
+    links = list(result["related_entries"])
+    for source in sources:
+        related = source.get("related_entries", [])
+        if (not isinstance(related, list)
+                or any(not isinstance(link, str) or not link.strip() for link in related)):
+            raise SelectionUnavailable("Thread related entries are unreadable")
+        links.extend(related)
+    result["related_entries"] = list(dict.fromkeys(links))
+    closes = [source for source in sources if source["kind"] == "close"]
+    if len(closes) == 1:
+        for field in ("successor", "residuals"):
+            if field in closes[0]:
+                value = closes[0][field]
+                if (not isinstance(value, list)
+                        or any(not isinstance(item, str) or not item.strip() for item in value)):
+                    raise SelectionUnavailable("close references are unreadable")
+                result[field] = copy.deepcopy(value)
+
+
 def selection_refs(entry: dict) -> list[str]:
     if not isinstance(entry, dict):
         return []
@@ -66,10 +89,17 @@ def selection_refs(entry: dict) -> list[str]:
     return list(dict.fromkeys(r for r in sources + evidence if isinstance(r, str) and r.startswith(PREFIX)))
 
 
-def load_selection(ref: str, repo: Path) -> dict:
+def load_selection(ref: str, repo: Path, *, snapshot: dict | None = None) -> dict:
     match = BINDING.fullmatch(ref)
     if match is None:
         raise SelectionUnavailable("selection Evidence reference is invalid")
+    if snapshot is not None and snapshot.get('format_version') == '0.4.3':
+        from pma.workmap_transfer import embedded_evidence
+        raw = embedded_evidence(snapshot, ref)
+        if raw is not None:
+            if hashlib.sha256(raw).hexdigest() != match[2]:
+                raise SelectionUnavailable('carried selection bytes changed')
+            return json.loads(raw)
     folder = (repo / "docs/work-management/evidence").resolve()
     path = (folder / match[1]).resolve()
     if path.parent != folder:
@@ -178,7 +208,8 @@ def validate_publication(snapshot: dict, request: dict, repo: Path) -> None:
             validate_selection(snapshot, load_selection(refs[0], repo), publishing=True)
 
 
-def meaning_thread(snapshot: dict, work_key: str | None = None, *, repo: Path) -> dict:
+def meaning_thread(snapshot: dict, work_key: str | None = None, *, repo: Path,
+                   reference_fields: bool = True, include_sources: bool = False) -> dict:
     records = snapshot["thread_entries"]
     relevant = [e for e in records if work_key is None or work_key in e["works"]]
     bindings = [(e, selection_refs(e)) for e in records if selection_refs(e)]
@@ -190,7 +221,7 @@ def meaning_thread(snapshot: dict, work_key: str | None = None, *, repo: Path) -
         try:
             if len(refs) != 1:
                 raise SelectionUnavailable("latest selection reference is ambiguous")
-            evidence = validate_selection(snapshot, load_selection(refs[0], repo))
+            evidence = validate_selection(snapshot, load_selection(refs[0], repo, snapshot=snapshot))
         except SelectionUnavailable as exc:
             return {"status": "unknown", "thread_entries": [], "raw_record_count": len(relevant),
                     "unreviewed_count": len(relevant), "reason": str(exc)}
@@ -200,20 +231,41 @@ def meaning_thread(snapshot: dict, work_key: str | None = None, *, repo: Path) -
     remaining = [e for e in relevant if e["id"] not in classified and not selection_refs(e)]
     pending = [e["id"] for e in remaining if e["kind"] not in TECHNICAL_KINDS | MEANING_KINDS]
     items = [copy.deepcopy(e) for e in evidence["thread_entries"] if work_key is None or work_key in e["works"]]
-    items.extend(direct_meaning(e) for e in remaining if e["kind"] in MEANING_KINDS)
-    return {"status": "needs_review" if pending else "confirmed", "thread_entries": items,
+    try:
+        records_by_id = {e["id"]: e for e in records}
+        for item in items:
+            _preserve_references(item if reference_fields else copy.deepcopy(item),
+                                 [records_by_id[i] for i in item["related_entries"]])
+        items.extend(direct_meaning(e, reference_fields=reference_fields) for e in remaining if e["kind"] in MEANING_KINDS)
+    except SelectionUnavailable as exc:
+        return {"status": "unknown", "thread_entries": [], "raw_record_count": len(relevant),
+                "unreviewed_count": len(relevant), "reason": str(exc)}
+    result = {"status": "needs_review" if pending else "confirmed", "thread_entries": items,
             "raw_record_count": len(relevant), "unreviewed_count": len(pending),
             "unreviewed_record_ids": pending[:20],
             "technical_only_count": sum(classified[e["id"]]["disposition"] == "technical_only" for e in relevant if e["id"] in classified) + sum(e["kind"] in TECHNICAL_KINDS for e in remaining),
             "selection_source": refs[0] if refs else None, "selection_record": anchor["id"],
             "source_revision": evidence["source_revision"], "observed_revision": snapshot["revision"],
             "rendering": "reviewed meaning projection; raw records preserved"}
+    if include_sources:
+        # Use the reviewed grouping, before authored reference links were
+        # added to the display. A reference to B does not mean A summarizes B.
+        sources = {e['id']: list(e['related_entries']) for e in evidence['thread_entries']
+                   if work_key is None or work_key in e['works']}
+        sources.update({e['id']: [e['id']] for e in remaining if e['kind'] in MEANING_KINDS})
+        result['source_record_ids'] = sources
+    return result
 
 
 def project_context(context: dict, snapshot: dict, repo: Path) -> dict:
     """Apply the same separation to nested parent/held contexts as well."""
     result = copy.deepcopy(context)
     key = result.get("work")
+    if 'notes' in result:
+        from pma.workmap_notes import actor_helpers, recorded_evidence
+        result['notes'] = []  # Shared free text is historical, not a second current state.
+        result['actor_helpers'] = actor_helpers(snapshot, key)
+        result['recorded_evidence'] = recorded_evidence(snapshot, key)
     if key is not None and "thread_entries" in result:
         selection = meaning_thread(snapshot, key, repo=repo)
         result["thread_entries"] = selection.pop("thread_entries")
@@ -224,6 +276,8 @@ def project_context(context: dict, snapshot: dict, repo: Path) -> dict:
         result["outcome"] = raw.get("outcome")
         result["reopen_condition"] = raw.get("revisit")
         result["residuals"] = copy.deepcopy(raw.get("residuals", []))
+        if "successor" in raw:
+            result["successor"] = copy.deepcopy(raw["successor"])
     if isinstance(result.get("parent_now"), dict) and "context" in result["parent_now"]:
         result["parent_now"]["context"] = project_context(result["parent_now"]["context"], snapshot, repo)
     if isinstance(result.get("held_now"), dict):

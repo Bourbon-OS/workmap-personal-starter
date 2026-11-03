@@ -115,6 +115,14 @@ class WorkMapCore:
         ]
         if transition_id not in receipts:
             if matching:
+                if snapshot['format_version'] == '0.4.3':
+                    from pma.workmap_transfer import validate_transfer_history
+                    _, imported = validate_transfer_history(snapshot)
+                    if transition_id in imported:
+                        return {'status': 'unknown', 'observed_revision': revision,
+                                'imported_result': copy.deepcopy(imported[transition_id]),
+                                'thread_entries': copy.deepcopy(matching),
+                                'boundary': 'Imported source provenance does not prove local execution.'}
                 raise TransitionError("Thread exists without its receipt")
             return {"status": "unknown", "observed_revision": revision}
         receipt = receipts[transition_id]
@@ -173,7 +181,9 @@ class WorkMapCore:
             snapshot["revision"] = uuid.uuid4().hex
             snapshot["recorded_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             for entry in snapshot["thread_entries"][prior_entry_count:]:
-                entry["recorded_at"] = snapshot["recorded_at"]
+                # Imported immutable records keep their original times/results.
+                if entry.get('transition_id') == transition_id:
+                    entry["recorded_at"] = snapshot["recorded_at"]
             receipt = {
                 "transition_id": transition_id,
                 "request_digest": request_hash,
@@ -210,7 +220,7 @@ class WorkMapCore:
             "intent", "source_refs", "preconditions", "changes", "thread_entries",
         }:
             raise TransitionError("unexpected or missing transition fields")
-        if transition.get("format_version") != "0.4.1" or snapshot.get("format_version") != "0.4.1":
+        if transition.get("format_version") != snapshot.get("format_version") or snapshot.get("format_version") not in ("0.4.2", "0.4.3"):
             raise UnsupportedTransition("unsupported format")
         if transition.get("project_id") != snapshot.get("project_id"):
             raise TransitionConflict("project identity differs")
@@ -259,6 +269,15 @@ class WorkMapCore:
         from pma.workmap_decision_context import require_operation_context
         require_operation_context(snapshot, transition, self.reviewed_decision_context,
                                   needs_pin=False, needs_parent_intent=False)
+        # Sourced metadata repairs must still obey applicable current rules,
+        # including when complete collections need no unknown-context review.
+        if operation == 'update_work':
+            from pma.workmap_contract import inspect_work, rule_requires_disposition
+            context = inspect_work(snapshot, work_key)
+            chain = {p['work_key'] for p in context['parent_chain']}
+            if any(chain.intersection(rule['targets']) and rule_requires_disposition(rule, [operation])
+                   for rule in snapshot['map']['action_rules']):
+                raise TransitionDenied('applicable Action Rule still needs disposition')
         if operation == "update_work":
             if change.get("expected") != {"origin": work.get("origin")}:
                 raise TransitionConflict("Work origin changed")
@@ -287,11 +306,17 @@ class WorkMapCore:
             raise TransitionDenied("transition is not permitted")
         if any(not _refs(permission.get("source_refs")) or not _nonempty(permission.get("grantor_ref")) for permission in applicable):
             raise TransitionDenied("Permission provenance is incomplete")
-        if not isinstance(entry, dict) or set(entry) != {
+        required_thread_fields = {
             "id", "works", "kind", "summary", "why", "occurred_at",
             "recorded_at", "actor", "source_refs", "transition_id",
-        } or not _nonempty(entry.get("id")) or entry.get("kind") != expected_kind:
+        }
+        if (not isinstance(entry, dict) or not required_thread_fields <= set(entry)
+                or not set(entry) <= required_thread_fields | {"related_entries"}
+                or not _nonempty(entry.get("id")) or entry.get("kind") != expected_kind):
             raise TransitionError("a matching Thread entry is required")
+        if "related_entries" in entry and (not isinstance(entry["related_entries"], list)
+                or any(not _nonempty(link) for link in entry["related_entries"])):
+            raise TransitionError("Thread related entries must be entry IDs")
         if entry.get("works") != [work_key] or entry.get("actor") != transition["actor_id"] or entry.get("transition_id") != transition["transition_id"]:
             raise TransitionError("Thread attribution differs")
         if not _nonempty(entry.get("summary")) or not _nonempty(entry.get("why")) or not _refs(entry.get("source_refs")):

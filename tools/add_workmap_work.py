@@ -11,9 +11,9 @@ import json
 import os
 from pathlib import Path
 from time import perf_counter
-from uuid import uuid4
 
-from pma.workmap_contract import validate_snapshot, child_address_prefix
+from pma.workmap_add import build_add_request
+from pma.workmap_contract import validate_snapshot
 from pma.workmap_contract import SnapshotInvalid
 from pma.workmap_store import StoreError
 from pma.workmap_store_factory import open_store
@@ -58,26 +58,10 @@ def add_work(store_path, *, backend, actor=None, parent=None, name=None, intent=
             except FileExistsError:
                 if evidence.read_bytes() != raw: raise ValueError('Owner evidence path contains different bytes')
             refs.append('repo:' + evidence.relative_to(REPO).as_posix())
-        prefix = 'W' if root else child_address_prefix(current['display_ids'][parent_key])
-        reserved = set(current['aliases']) | set(current['display_ids'].values())
-        number = 1
-        while prefix + str(number) in reserved: number += 1
-        display = display_id if root else prefix + str(number)
-        key, tid = str(uuid4()), 'transition:' + str(uuid4())
-        request = {'format_version': current['format_version'], 'project_id': current['project_id'],
-                   'transition_id': tid, 'actor_id': actor, 'base_revision': current['revision'],
-                   'intent': 'Register the specified Work', 'source_refs': refs,
-                   'preconditions': [], 'changes': [{'op': 'add_work', 'target': key if root else parent_key,
-                       'value': {'work': {'work_key': key, 'name': name, 'intent': intent,
-                                          'origin': {'summary': origin, 'refs': refs}}, 'display_id': display}}],
-                   'thread_entries': []}
-        if root:
-            request['changes'][0]['value']['parent'] = None
-        if reason:
-            request['thread_entries'] = [{'id': 'rationale:' + tid, 'works': [key] if root else [key, parent_key],
-                'kind': 'rationale_added', 'summary': name + ': additional rationale', 'why': reason,
-                'occurred_at': None, 'recorded_at': started, 'actor': actor,
-                'source_refs': refs, 'transition_id': tid}]
+        request = build_add_request(current, actor=actor, parent=parent_key, name=name,
+            intent=intent, origin=origin, refs=refs, reason=reason, root=root,
+            display_id=display_id, recorded_at=started)
+        tid = request['transition_id']
         # Preserve the exact request before any Store mutation so ambiguous
         # responses can be checked/replayed with the same identity and base.
         directory = (store_path if backend == 'text' else store_path.parent)/'transition-requests'
