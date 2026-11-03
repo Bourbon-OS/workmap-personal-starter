@@ -2,14 +2,14 @@
   "purpose": "personal local trial; source included; no live project data",
   "files": {
     ".gitignore": "54c18ce80e83971950d6e33ecb6860b8df293919012b8a04187ea7c8424c5a91",
-    "HANDOVER.md": "2cc8d9ef6116be44c0ebd917bbd5fe77a213f9f6974896c15d45efd6bb55c0ff",
+    "HANDOVER.md": "f09567eda95b9999aa9a8e388596a3d8f216a60d24772b4f1bb95e440ba4e40d",
     "LICENSE": "27a5e029533d0c145bbd3436b4849fe76a2097cc59c0f6d9e69e9ecc3e0f9979",
     "LICENSE-DOCS.md": "20228ed1f60c4c0201bdc7c5eca2d5318dca82eb9dc51c8fd5faf0b92e9b8f86",
     "NAME_ORIGIN.md": "e2d9778afc942cc34ae47e89b858f266f6073953411a720b687e7169a511c73a",
     "NOTICE.md": "2e6dde8e2ae7afdaf95c12b9b8b7f823d77cad580893fb80ca15af6c1236cc90",
-    "README.md": "863b9744c122637acdc0be68f9aa90682953c37376fa8ec969e4f2d238489b63",
-    "RELEASE_NOTES.md": "e96e0c5a73d90fe5dd01f2b40573fc8e416d4f041b850184c2425fe29f3702ad",
-    "USAGE.md": "936459c18a8394b56683df330c73135a5d7be7b9125e7b8305069995e0920c70",
+    "README.md": "ceef386f3f8258b8ce235394f389da620b8f115fc0c84c8321cdbdd0cc760405",
+    "RELEASE_NOTES.md": "ae860da69566dcd9fdb6fb4a26ddea27d9c45e692a3d12cfa2dc4f54dc49acbd",
+    "USAGE.md": "3443b154254849f17582faded2ca18639dbd0c50082525a7fe461b4226788f37",
     "WorkMap.pyw": "c9ef50ce11e2c6e9716d0007779b70053d49745963d686233c5464173fc2da81",
     "check.py": "af1dd410784a6e8a477cba2a08f0678dbf5abe84751b712ae2a20c0d8cb54b1d",
     "docs/images/booklet-map-thread.jpg": "0240646eca99c2f69595226c424d859792a84ef1f768b8681d9f1fb45c6f83e7",
@@ -68,23 +68,23 @@
   },
   "distribution": {
     "product": "Work Map / Work Thread Personal Local Trial",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "stage": "trial",
-    "source_artifact_sha256": "1add77f5c0f1ceae289735cdd4a46ff539d1995e91c3622fcef38b0bde779d9f",
-    "previous_public_version": "0.2.0",
-    "previous_public_commit": "8e623e4db03c4afc2aa0ecd7e83b847b179a224a",
+    "source_artifact_sha256": "cec0671cf81051365722b05a49371e3898ad59de2681fee1e7090b3627c9f111",
+    "previous_public_version": "0.2.1",
+    "previous_public_commit": "1c38ff7dfb6d98ac6c2d6cc9dd8c0ba66aca4ea4",
     "packaging_changes": [
       {
         "path": "HANDOVER.md",
-        "source_sha256": "d2850088ae31363a9086418f0263f0b0587f493522cd6ac40ef6568cd2b03d60",
-        "sha256": "2cc8d9ef6116be44c0ebd917bbd5fe77a213f9f6974896c15d45efd6bb55c0ff",
-        "reason": "only public-version token v0.2.0 to v0.2.1"
+        "source_sha256": "2cc8d9ef6116be44c0ebd917bbd5fe77a213f9f6974896c15d45efd6bb55c0ff",
+        "sha256": "f09567eda95b9999aa9a8e388596a3d8f216a60d24772b4f1bb95e440ba4e40d",
+        "reason": "only public-version token v0.2.1 to v0.2.2; data format stays 0.4.2"
       },
       {
         "path": "RELEASE_NOTES.md",
-        "source_sha256": "91c1a4080f80cecfca0ddff5db2d319207c9b7032150f5600fb66f1e779b8aa5",
-        "sha256": "e96e0c5a73d90fe5dd01f2b40573fc8e416d4f041b850184c2425fe29f3702ad",
-        "reason": "public version and complete documentation-update description"
+        "source_sha256": "e96e0c5a73d90fe5dd01f2b40573fc8e416d4f041b850184c2425fe29f3702ad",
+        "sha256": "ae860da69566dcd9fdb6fb4a26ddea27d9c45e692a3d12cfa2dc4f54dc49acbd",
+        "reason": "public version and combined documentation-update explanation"
       }
     ]
   }
