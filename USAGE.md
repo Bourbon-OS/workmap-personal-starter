@@ -5,9 +5,10 @@
 ## 最初にすること
 
 1. ZIPを利用するWindows PCの**同期対象外のローカルフォルダ**へ展開します。例：`C:\WorkMapPersonal`。展開された`workmap.py`と`README.md`のあるフォルダを使います。OneDrive、共有フォルダ、ネットワークドライブ上では運用しません。
-2. PowerShellでそのフォルダを開き、`python --version`で **Python 3.11以上**と表示されるか確認します。
-   Pythonが見つからない、または3.11未満の場合は、[Python公式のWindows導入案内](https://docs.python.org/3/using/windows.html)に沿ってインストールし、PowerShellを開き直してもう一度確認します。
+2. エクスプローラーでそのフォルダを開き、上部のアドレスバーに`powershell`と入力してEnterを押します。開いたPowerShellで`python --version`を実行し、**Python 3.11以上**と表示されるか確認します。
+   Pythonが見つからない、または3.11未満の場合は、[Python公式ダウンロードページ](https://www.python.org/downloads/)からWindows用を入手してインストールし、PowerShellを開き直してもう一度確認します。詳しい手順は[公式のWindows導入案内](https://docs.python.org/3/using/windows.html)にあります。
    続けて`python -m tkinter`を実行し、小さなウィンドウが開けば画面表示の準備もできています。確認したらそのウィンドウを閉じます。追加ライブラリは不要です。
+   ウィンドウが開かない場合は、表示されたエラー文を控えます。`tkinter`や`_tkinter`が見つからない場合は、利用中のPythonの提供元で、画面表示用のTcl/Tkの追加・修復方法を確認してください（[Tkinter公式案内](https://docs.python.org/3/library/tkinter.html)）。`python`コマンド自体が動かない場合は、[Windows版のトラブルシューティング](https://docs.python.org/3/using/windows.html#troubleshooting)を参照してください。
 3. 次の例を自分の仕事の言葉へ直して実行します。本人の登録指示として扱われるので、AIに実行させる場合も実際に承認した内容を渡してください。
 
 ```powershell
@@ -45,13 +46,11 @@ python workmap.py add --parent W0 --name "月次報告を整える" --intent "�
 
 ### 登録したWorkの操作を許可する
 
-新しいW1を自分で扱う時は、そのWorkで使う操作を別に選びます。追加を許可しても、編集や終了まで許可されたことにはなりません。次は訂正・記録・Pin操作・終了をすべて使う場合の例です。使う操作だけを指定してください。
+新しいW1を自分で扱う時は、そのWorkで使う操作を別に選びます。Workを登録しても、編集や終了まで許可されたことにはなりません。次は訂正・記録・Pin操作・終了をすべて使う場合の例です。使う操作だけを指定してください。
 
 ```powershell
 python workmap.py permit --work W1 --edit --record --pin --close --owner-instruction "W1の訂正、理由と結果の記録、本人Pin操作、終了に必要な確認を済ませた場合の終了をOwnerに許可する"
 ```
-
-配布フォルダを移した場合や別Mapへコピーした場合は、現在の保存先を確認し、Mapへの追加許可を設定し直してください。
 
 ### 画面から追加・訂正する準備
 
@@ -64,6 +63,8 @@ python workmap.py permit --work W1 --edit --record --pin --close --owner-instruc
 ```powershell
 python workmap.py permit --work W0 --map-add --owner-instruction "このMapの現在・今後のWorkの下への新しいWork追加をOwnerに許可する"
 ```
+
+配布フォルダを移した場合や別Mapへコピーした場合は、現在の保存先を確認し、Mapへの追加許可を設定し直してください。
 
 今のGUIでは、追加内容の根拠になる文書も必要です。`docs`配下に、登録する名前・目的・生まれたきっかけを本人が採用したことを書いたテキストを保存し、「資料を選ぶ」から指定します。手元に文書を用意せず追加したい時は、上の「仕事を登録する」のコマンドを使えます。入力した登録指示から、必要な記録を作ります。
 
