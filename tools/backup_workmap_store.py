@@ -6,6 +6,7 @@ Recovery never overwrites or switches the original canonical Store.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ from pathlib import Path
 
 from pma.workmap_contract import validate_snapshot
 from pma.workmap_store_factory import open_store
+from pma.workmap_core import _digest
 from pma.workmap_thread_view import (BINDING, SelectionUnavailable, meaning_thread,
                                     selection_refs, validate_selection)
 
@@ -34,6 +36,14 @@ def _thread_files(snapshot: dict, repo: Path) -> list[tuple[Path, bytes]]:
     match = BINDING.fullmatch(refs[0]) if len(refs) == 1 else None
     if match is None:
         raise SelectionUnavailable('latest selection reference is invalid or ambiguous')
+    if snapshot['format_version'] == '0.4.3':
+        from pma.workmap_transfer import embedded_evidence
+        raw = embedded_evidence(snapshot, refs[0])
+        if raw is not None:
+            validate_selection(snapshot, json.loads(raw))
+            # These bytes are already inside the snapshot's immutable Evidence
+            # manifest. No companion filesystem is required for their recovery.
+            return []
     relative = Path('docs/work-management/evidence') / match[1]
     path = (repo / relative).resolve()
     if not path.is_relative_to(repo.resolve()) or path.parent != (repo / relative.parent).resolve():
@@ -128,6 +138,76 @@ def recover_isolated(backup_path: Path, target_path: Path, expected_sha256: str,
             'thread_reason': thread_error, 'evidence_repo': str(evidence_root),
             "artifact_recovery": "unknown",
             "artifact_reason": "backup retains references, not external artifact contents"}
+
+
+def inspect_recovery(candidate_path: Path, *, backend='sqlite', work=None, thread=False):
+    """Explicit read-only candidate view. Ordinary readers still reject it."""
+    from pma.workmap_contract import inspect_work
+    from pma.workmap_thread_view import project_context
+    from tools.read_workmap_store import id_title_tree
+    candidate_path = Path(candidate_path).resolve()
+    store = open_store(candidate_path, backend)
+    value = store.read(read_only=True) if backend == 'sqlite' else store.read()
+    state = validate_snapshot(value.snapshot)
+    if state['metadata'].get('store_role') != 'recovery_candidate':
+        raise ValueError('explicit candidate view requires a recovery candidate, never a current Store')
+    root = candidate_path.parent / (candidate_path.name + '.evidence')
+    key = state['aliases'].get(work, work) if work else None
+    if work and key not in state['display_ids']:
+        raise ValueError('Work is absent from this recovery candidate')
+    result = {'status': 'confirmed', 'read_only': True, 'role': 'recovery_candidate',
+              'project_id': state['project_id'], 'revision': state['revision'],
+              'candidate_token': value.token, 'source_sha256': state['metadata'].get('recovery_source_sha256'),
+              'tree': id_title_tree(state), 'boundary': 'isolated candidate, not the current Map'}
+    if key in state['map']['members']:
+        result['context'] = project_context(inspect_work(state, key), state, root)
+    if thread or key is not None:
+        result['thread'] = meaning_thread(state, key, repo=root)
+        if result['thread']['status'] == 'unknown': result['status'] = 'unknown'
+    return result
+
+
+def prepare_restore(backup_path, candidate_path, expected_sha256, candidate_token, project_id,
+                    *, backend='sqlite'):
+    """Verify the inspected candidate against the exact original backup bytes."""
+    raw = Path(backup_path).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_sha256.lower():
+        raise ValueError('backup SHA-256 differs from reviewed bytes')
+    backup = json.loads(raw)
+    if backup.get('format') != 'ashiba-workmap-backup-1':
+        raise ValueError('backup envelope is invalid')
+    original = validate_snapshot(backup['snapshot'])
+    if original['metadata'].get('store_role') != 'canonical_current' or original['project_id'] != project_id:
+        raise ValueError('restoration requires the explicitly selected project and canonical backup')
+    selected = open_store(Path(candidate_path).resolve(), backend)
+    read = selected.read(read_only=True) if backend == 'sqlite' else selected.read()
+    expected = copy.deepcopy(original)
+    expected['metadata'].update(store_role='recovery_candidate', recovery_source_sha256=expected_sha256.lower())
+    if read.token != candidate_token or read.snapshot != expected:
+        raise ValueError('recovery candidate changed or differs from the reviewed backup')
+    root = Path(candidate_path).resolve().parent / (Path(candidate_path).name + '.evidence')
+    files = _thread_files(expected, root)
+    view = meaning_thread(expected, repo=root)
+    if view['status'] == 'unknown':
+        raise ValueError('recovery meaning is unavailable: ' + view['reason'])
+    return original, files, view['status']
+
+
+def restore_verified(snapshot, files, target_path, evidence_root, *, backend='sqlite'):
+    """Only initialize an absent destination; never overwrite/rename a live DB."""
+    target_path = Path(target_path).resolve()
+    if target_path.exists():
+        raise FileExistsError('preserve the original DB first; recovery never overwrites an existing destination')
+    if backend == 'sqlite' and any(Path(str(target_path) + suffix).exists() for suffix in ('-journal','-wal','-shm')):
+        raise FileExistsError('preserve the original SQLite companion files before restoring to this location')
+    state = validate_snapshot(snapshot)
+    if state['metadata'].get('store_role') != 'canonical_current':
+        raise ValueError('restore input must be the explicitly reviewed canonical snapshot')
+    _copy_thread_files(files, Path(evidence_root).resolve())
+    committed = open_store(target_path, backend).initialize(state)
+    if _digest(committed.snapshot) != _digest(state):
+        raise RuntimeError('restored Store differs from reviewed input')
+    return {'revision': state['revision'], 'project_id': state['project_id'], 'role': 'canonical_current'}
 
 
 def main() -> None:

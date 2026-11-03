@@ -34,4 +34,10 @@ def current_reference_status(current: dict, repo: Path) -> list[dict]:
     relations = current.get('dependencies', current.get('relations', []))
     refs.extend(ref for item in relations if item.get('kind') == 'dependency' for ref in item.get('refs', []))
     refs.extend(ref for item in relations for ref in (item.get('provider_close', {}).get('evidence_refs') or []))
+    refs.extend(ref for item in current.get('recorded_evidence', []) for ref in item.get('source_refs', []))
+    refs.extend(ref for item in current.get('actor_helpers', []) for ref in item['note']['refs'])
+    if isinstance(current.get('map'), dict):
+        refs.extend(r['ref'] for r in current_reference_status(current['map'], repo))
+    if isinstance(current.get('thread'), dict):
+        refs.extend(ref for item in current['thread'].get('thread_entries', []) for ref in item.get('source_refs', []))
     return inspect_references(refs, repo)

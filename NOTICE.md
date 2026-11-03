@@ -1,12 +1,12 @@
 # 配布範囲とライセンス
 
-Work Map Personal Starter / Bourbon-OS / 2026
+Work Map／Work Thread 個人向けローカル試用版 / Bourbon-OS / 2026
 
-このリポジトリは、Work Map／Work Threadを個人利用から始め、利用先で改良するための限定スターターです。
+この配布は、Work Map／Work Threadを自分のWindows PCで使い始められる、ソース付きの個人向けローカル試用版です。利用先での改良も可能です。
 
 | 対象 | ライセンス |
 |---|---|
-| Pythonソース、設定、manifest、文書内の実行用コード例 | MIT（LICENSE） |
+| Pythonソース、設定、manifest、同梱アイコン資材、文書内の実行用コード例 | MIT（LICENSE） |
 | README、HANDOVER等のMarkdown説明文書 | CC BY 4.0（LICENSE-DOCS.md） |
 
 LICENSEのMIT許諾は上記のコード等へ適用します。説明文書にはLICENSE-DOCS.mdの指定が優先します。

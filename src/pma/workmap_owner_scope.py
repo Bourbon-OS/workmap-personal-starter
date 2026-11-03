@@ -1,7 +1,7 @@
 """Record a fresh Owner scope without asserting incomplete collections are empty.
 
 This grants repository inspection and isolated tests, never ordinary Map edits.
-The trusted caller reviews attribution, conditions and acceptance separately.
+The trusted caller reviews attribution, action_rules and acceptance separately.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ class ReviewedOwnerScope:
 
 
 def context_guard(snapshot: dict) -> dict:
-    return {**{field: copy.deepcopy(snapshot["map"][field]) for field in ("pins", "permissions", "conditions")},
+    return {**{field: copy.deepcopy(snapshot["map"][field]) for field in ("pins", "permissions", "action_rules")},
             "completeness": copy.deepcopy(snapshot["metadata"].get("completeness")),
             "purposes": {k: w["intent"] for k, w in snapshot["works"].items()},
             "parents": copy.deepcopy([r for r in snapshot["map"]["relations"] if r["kind"] == "parent"])}
@@ -56,8 +56,21 @@ def scope_history(entry: dict) -> dict:
             raise ValueError()
         pin, grant, sources = history["pin"], history["permission"], history["owner_sources"]
         prior = history["prior_context"]
-        if (set(prior) != {"pins", "permissions", "conditions", "completeness", "purposes", "parents"}
-                or any(not isinstance(prior[n], list) for n in ("pins", "permissions", "conditions"))
+        # This is a validation/evaluation copy of an immutable historical
+        # record, never a legacy spelling accepted by a current writer.
+        if isinstance(prior, dict) and 'conditions' in prior:
+            if 'action_rules' in prior:
+                raise ValueError()
+            history = copy.deepcopy(history)
+            prior = history['prior_context']
+            prior['action_rules'] = prior.pop('conditions')
+            complete = prior.get('completeness')
+            if isinstance(complete, dict) and 'conditions' in complete:
+                if 'action_rules' in complete:
+                    raise ValueError()
+                complete['action_rules'] = complete.pop('conditions')
+        if (set(prior) != {"pins", "permissions", "action_rules", "completeness", "purposes", "parents"}
+                or any(not isinstance(prior[n], list) for n in ("pins", "permissions", "action_rules"))
                 or not isinstance(prior["purposes"], dict) or not isinstance(prior["parents"], list)
                 or set(pin) != {"id", "work_id", "actor_id", "mode", "pinned_at", "confirmed_at", "refs"}
                 or set(grant) != {"id", "targets", "grantee", "effect", "operations", "constraints", "grantor_ref", "source_refs"}
@@ -92,7 +105,7 @@ def limited_review_context(snapshot: dict, target: str, actor: str, scope_thread
         raise TransitionDenied('exact coordinator scope is required')
     check_scope(snapshot, target, actor, scope_thread)
     context = inspect_work(snapshot, target)
-    for name in ('pins', 'permissions', 'conditions'):
+    for name in ('pins', 'permissions', 'action_rules'):
         context[name] = copy.deepcopy([item for item in snapshot['map'][name]
             if (item['work_id'] == target if name == 'pins' else target in item['targets'])])
     return context
@@ -134,16 +147,16 @@ def check_scope(snapshot: dict, target: str, actor: str, scope_thread: str) -> d
     if (old_chain[::-1] != [p["work_key"] for p in context["parent_chain"]]
             or any(prior["purposes"].get(p["work_key"]) != p["intent"] for p in context["parent_chain"])):
         raise ContextUnknown("Work purpose or parent chain changed; review the limited scope again")
-    relevant = lambda conditions: [c for c in conditions if chain & set(c["targets"])]
-    if relevant(snapshot["map"]["conditions"]) != relevant(history["prior_context"]["conditions"]):
-        raise ContextUnknown("recorded applicable Conditions changed; review the limited scope again")
+    relevant = lambda action_rules: [c for c in action_rules if chain & set(c["targets"])]
+    if relevant(snapshot["map"]["action_rules"]) != relevant(history["prior_context"]["action_rules"]):
+        raise ContextUnknown("recorded applicable Action Rules changed; review the limited scope again")
     if any(p["actor_id"] == actor and p["mode"] == "active" and p != pin for p in snapshot["map"]["pins"]):
         raise TransitionConflict("another recorded active Pin exists for this actor")
     if any(target in p["targets"] and p.get("grantee") == actor and p["effect"] != "allow"
            and set(p["operations"]) & set(grant["operations"]) for p in snapshot["map"]["permissions"]):
         raise TransitionDenied("recorded denial or unknown scope authority remains")
     return {"status": "ready_limited", "pin": copy.deepcopy(pin), "permission": copy.deepcopy(grant),
-            "collection_status": {name: context[f"{name}_status"] for name in ("pin", "permission", "condition")},
+            "collection_status": {name: context[f"{name}_status"] for name in ("pin", "permission", "action_rule")},
             "scope": copy.deepcopy(grant["constraints"])}
 
 
@@ -221,8 +234,8 @@ def apply_owner_scope(snapshot: dict, transition: dict, change: dict, entry: dic
                 break
             key = old_parents[key]
         relevant = lambda items, keys: [c for c in items if keys.intersection(c['targets'])]
-        if relevant(snapshot['map']['conditions'], chain) != relevant(prior_scope['prior_context']['conditions'], old_chain):
-            raise ContextUnknown('changed applicable Conditions need separate disposition before renewal')
+        if relevant(snapshot['map']['action_rules'], chain) != relevant(prior_scope['prior_context']['action_rules'], old_chain):
+            raise ContextUnknown('changed applicable Action Rules need separate disposition before renewal')
         if any(p['actor_id'] == actor and p['mode'] == 'active' and p != old_pin for p in snapshot['map']['pins']):
             raise TransitionConflict('another recorded active Pin exists for this actor')
         if (any(pin[k] != old_pin[k] for k in old_pin if k != "refs")

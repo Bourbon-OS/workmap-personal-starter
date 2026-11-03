@@ -62,7 +62,7 @@ def verify_permission_sources(review):
 def _recover_untouched_birth(snapshot, request, repo):
     """Repair the old add_work omission only from a committed exact request.
 
-    This is not evidence that an imported Work has no Pins or Conditions.
+    This is not evidence that an imported Work has no Pins or Action Rules.
     Any later participation/change/close requires its own assessment instead.
     """
     entry = request['thread_entries'][0]
@@ -92,7 +92,7 @@ def _recover_untouched_birth(snapshot, request, repo):
     if (len(relations) != 1 or relations[0]['kind'] != 'parent'
             or relations[0]['child'] != target or relations[0]['parent'] != change['target']
             or any(p['work_id'] == target for p in m['pins'])
-            or any(target in x['targets'] for n in ('permissions', 'conditions', 'notes') for x in m[n])):
+            or any(target in x['targets'] for n in ('permissions', 'action_rules', 'notes') for x in m[n])):
         raise ValueError('birth context has changed')
     confirm_new_work_collections(snapshot, target)
 
@@ -116,8 +116,9 @@ def validate_owner_permission(snapshot, request, review, operation_review=None):
            and set(p['operations']).intersection(grant['operations']) and p['effect'] != 'allow'
            for p in snapshot['map']['permissions']):
         raise TransitionDenied('resolve the existing denial before granting')
-    if any(chain.intersection(c['targets']) for c in snapshot['map']['conditions']):
-        raise TransitionDenied('applicable Conditions need assessment before granting')
+    from pma.workmap_contract import rule_requires_disposition
+    if any(chain.intersection(c['targets']) and rule_requires_disposition(c, ['set_permission']) for c in snapshot['map']['action_rules']):
+        raise TransitionDenied('applicable Action Rules need assessment before granting')
     # Preserve proof/version bindings in the existing technical permission record.
     entry = request['thread_entries'][0]
     detail = {'owner_sources': [{'ref': r, 'sha256': h} for r, h in review.bindings],

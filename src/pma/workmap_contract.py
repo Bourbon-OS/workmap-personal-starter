@@ -59,13 +59,22 @@ def confirm_new_work_collections(snapshot: dict, work_key: str) -> None:
 
     Confirm only this Work, never its migrated parent or siblings.
     """
+    confirm_work_collections(snapshot, work_key, ('pins', 'permissions', 'action_rules'))
+
+
+def confirm_work_collections(snapshot: dict, work_key: str, names) -> None:
+    """Mark only reviewed current collections; callers establish the evidence."""
+    names = tuple(names)
+    if work_key not in snapshot['map']['members'] or not names or any(
+            name not in ('pins', 'permissions', 'action_rules') for name in names):
+        raise SnapshotInvalid('confirmation needs current Work and selected collections')
     metadata = snapshot['metadata']
     if metadata.get('completeness') == 'full':
         return
     completeness = metadata.setdefault('completeness', {})
     if completeness is None:
         completeness = metadata['completeness'] = {}
-    for name in ('pins', 'permissions', 'conditions'):
+    for name in names:
         scope = completeness.get(name)
         if scope == 'full':
             continue
@@ -126,8 +135,16 @@ def validate_snapshot(snapshot: object) -> dict:
         "aliases", "display_ids", "display_id_history", "map", "retirements",
         "thread_entries", "receipts", "metadata",
     }
-    if not required <= snapshot.keys() or snapshot.get("format_version") != "0.4.1":
+    if not required <= snapshot.keys() or snapshot.get("format_version") not in ("0.4.2", "0.4.3"):
         _fail("required snapshot fields or format are missing")
+    transfer_identities, imported_receipts = {}, {}
+    if snapshot['format_version'] == '0.4.3':
+        from pma.workmap_transfer import validate_transfer_history
+        transfer_identities, imported_receipts = validate_transfer_history(snapshot)
+    if ('conditions' in snapshot.get('map', {})
+            or isinstance(snapshot.get('metadata', {}).get('completeness'), dict)
+            and 'conditions' in snapshot['metadata']['completeness']):
+        _fail('legacy collection names are not a current Action Rule format')
     if not _nonempty(snapshot["project_id"]) or not _nonempty(snapshot["revision"]) or not _time(snapshot["recorded_at"]):
         _fail("project identity, revision, or recorded time is invalid")
     works = snapshot["works"]
@@ -139,9 +156,11 @@ def validate_snapshot(snapshot: object) -> dict:
     if not isinstance(snapshot["display_id_history"], list) or not isinstance(snapshot["thread_entries"], list):
         _fail("snapshot history collections are invalid")
     # Local reference resolution only: closed identities live in close Thread.
-    # Legacy 0.4.1 snapshots may still contain noncurrent Work bytes; they are
+    # Legacy 0.4.2 snapshots may still contain noncurrent Work bytes; they are
     # accepted as historical compatibility data, not a second current set.
     works = dict(works)
+    for key, identity in transfer_identities.items():
+        works.setdefault(key, identity)
     from pma.workmap_resume import close_history
     from pma.workmap_core import TransitionError
     for entry in snapshot["thread_entries"]:
@@ -170,20 +189,20 @@ def validate_snapshot(snapshot: object) -> dict:
         _fail("current display ID alias is missing")
     if any(key not in works for key in aliases.values()):
         _fail("an alias points outside Work records")
-    for name in ("members", "relations", "pins", "permissions", "conditions", "notes"):
+    for name in ("members", "relations", "pins", "permissions", "action_rules", "notes"):
         if not isinstance(current.get(name), list):
             _fail(f"current {name} collection is missing or unreadable")
     members = current["members"]
     if len(members) != len(set(members)) or any(key not in snapshot["works"] for key in members):
         _fail("current members are invalid")
     member_set = set(members)
-    if any(key not in member_set and key not in snapshot["retirements"] for key in works):
+    if any(key not in member_set and key not in snapshot["retirements"] and key not in transfer_identities for key in works):
         _fail("noncurrent identity has no close history; pre-Work records are not supported")
     completeness = snapshot["metadata"].get("completeness")
     if completeness is not None and completeness != "full":
         if not isinstance(completeness, dict):
             _fail("completeness declaration is invalid")
-        for name in ("pins", "permissions", "conditions"):
+        for name in ("pins", "permissions", "action_rules"):
             scope = completeness.get(name)
             if scope in (None, "unknown", "full"):
                 continue
@@ -239,9 +258,9 @@ def validate_snapshot(snapshot: object) -> dict:
         if permission["id"] in permission_ids:
             _fail("Permission ID is reused")
         permission_ids.add(permission["id"])
-    for condition in current["conditions"]:
-        if not isinstance(condition, dict) or not _nonempty(condition.get("id")) or not _refs(condition.get("targets")) or any(target not in works for target in condition["targets"]) or not _nonempty(condition.get("statement")) or not _refs(condition.get("refs")) or not condition["refs"]:
-            _fail("Condition is unreadable")
+    for action_rule in current["action_rules"]:
+        if not isinstance(action_rule, dict) or not _nonempty(action_rule.get("id")) or not _refs(action_rule.get("targets")) or any(target not in works for target in action_rule["targets"]) or not _nonempty(action_rule.get("statement")) or not _refs(action_rule.get("refs")) or not action_rule["refs"]:
+            _fail("Action Rule is unreadable")
     for note in current["notes"]:
         if not isinstance(note, dict) or not _nonempty(note.get("id")) or not _refs(note.get("targets")) or any(target not in works for target in note["targets"]) or not _nonempty(note.get("text")) or not _refs(note.get("refs")) or note.get("basis") not in ("fact", "reported", "proposal", "inference", "unknown"):
             _fail("current note is unreadable")
@@ -251,14 +270,18 @@ def validate_snapshot(snapshot: object) -> dict:
             _fail("Thread entry is unreadable or reused")
         if entry.get("why") is not None and not _nonempty(entry["why"]):
             _fail("Thread reason is unreadable")
-        if entry["kind"] == "condition_transferred":
+        if entry["kind"] in ("action_rule_transferred", "condition_transferred"):
             try:
                 history = json.loads(entry.get("consequence", ""))
             except (ValueError, TypeError):
-                _fail("Condition transfer history is unreadable")
-            if not isinstance(history, dict) or set(history) != {"old_condition", "new_condition", "from_work", "to_work"}:
-                _fail("Condition transfer history is incomplete")
-            old, new = history["old_condition"], history["new_condition"]
+                _fail("Action Rule transfer history is unreadable")
+            # The former names occur only inside immutable historical records.
+            old_field, new_field = (('old_condition', 'new_condition')
+                                    if entry['kind'] == 'condition_transferred'
+                                    else ('old_action_rule', 'new_action_rule'))
+            if not isinstance(history, dict) or set(history) != {old_field, new_field, "from_work", "to_work"}:
+                _fail("Action Rule transfer history is incomplete")
+            old, new = history[old_field], history[new_field]
             if (not isinstance(old, dict) or not isinstance(new, dict)
                     or not _nonempty(old.get("id")) or not _nonempty(old.get("statement"))
                     or not _refs(old.get("refs")) or not old["refs"]
@@ -268,7 +291,7 @@ def validate_snapshot(snapshot: object) -> dict:
                     or entry["works"] != [history["from_work"], history["to_work"]]
                     or {key: val for key, val in old.items() if key != "targets"} != {key: val for key, val in new.items() if key != "targets"}
                     or not set(old["refs"]).issubset(entry["source_refs"])):
-                _fail("Condition transfer history scope or original meaning differs")
+                _fail("Action Rule transfer history scope or original meaning differs")
         if entry["kind"] in ("intent_confirmation", "intent_correction", "intent_refinement"):
             try:
                 history = json.loads(entry.get("consequence", ""))
@@ -431,7 +454,13 @@ def validate_snapshot(snapshot: object) -> dict:
         # Thread. Operation-specific writers enforce required explanations.
         if any(entry["recorded_at"] != receipt["recorded_at"] for entry in linked):
             _fail("receipt and Thread do not share one committed transition")
-    if any(transition_id not in snapshot["receipts"] for transition_id in transition_entries):
+    for transition_id, entries in transition_entries.items():
+        if transition_id in snapshot['receipts']:
+            continue
+        prior = imported_receipts.get(transition_id)
+        if prior is None or any(e['recorded_at'] != prior['recorded_at'] for e in entries):
+            _fail('Thread has no local receipt or valid imported committed result')
+    if any(transition_id not in snapshot["receipts"] and transition_id not in imported_receipts for transition_id in transition_entries):
         _fail("Thread transition has no receipt")
     for key, entry_id in snapshot["retirements"].items():
         if key not in works or entry_id not in thread_ids or thread_ids[entry_id]["kind"] != "close" or key not in thread_ids[entry_id]["works"]:
@@ -459,6 +488,12 @@ def inspect_work(snapshot: dict, work_key: str) -> dict:
 
     def provider_context(key: str) -> dict:
         from pma.workmap_resume import closed_identity
+        if key not in members and snapshot['format_version'] == '0.4.3':
+            from pma.workmap_transfer import provider_history, moved_out
+            history = provider_history(snapshot, key)
+            if history is not None and (moved_out(snapshot, key) or key not in snapshot['retirements']):
+                return {"provider_display_id": display[key],
+                        "provider_name": history['provider_identity']['name'], **history}
         identity = works[key] if key in members else closed_identity(snapshot, key)
         result = {"provider_display_id": display[key], "provider_name": identity["name"] if identity else None,
                   "provider_status": "current" if key in members else "closed_history"}
@@ -478,6 +513,11 @@ def inspect_work(snapshot: dict, work_key: str) -> dict:
                 result['provider_close']['reviewed_versions'] = None
         return result
 
+    external_dependency_history = []
+    if snapshot['format_version'] == '0.4.3':
+        from pma.workmap_transfer import dependency_history
+        external_dependency_history = dependency_history(snapshot, work_key)
+
     return {
         "project_id": snapshot["project_id"],
         "revision": snapshot["revision"],
@@ -489,14 +529,27 @@ def inspect_work(snapshot: dict, work_key: str) -> dict:
         "pins": [pin for pin in current["pins"] if pin["work_id"] == work_key] if _collection_status(snapshot, "pins", work_key) == "confirmed" else None,
         "permission_status": _collection_status(snapshot, "permissions", work_key),
         "permissions": [item for item in current["permissions"] if work_key in item["targets"]] if _collection_status(snapshot, "permissions", work_key) == "confirmed" else None,
-        "condition_status": _collection_status(snapshot, "conditions", work_key),
-        "conditions": [item for item in current["conditions"] if work_key in item["targets"]] if _collection_status(snapshot, "conditions", work_key) == "confirmed" else None,
+        "action_rule_status": _collection_status(snapshot, "action_rules", work_key),
+        "action_rules": [item for item in current["action_rules"] if work_key in item["targets"]] if _collection_status(snapshot, "action_rules", work_key) == "confirmed" else None,
         "notes": [item for item in current["notes"] if work_key in item["targets"]],
         "dependencies": [{**item, **provider_context(item["provider"])} for item in current["relations"] if item["kind"] == "dependency" and item["consumer"] == work_key],
+        "external_dependency_history": external_dependency_history,
         "children": [related_work(child) for child, parent in parents.items() if parent == work_key],
         "siblings": [related_work(child) for child, parent in parents.items() if child != work_key and parent == parents.get(work_key)],
         "thread_entries": [item for item in snapshot["thread_entries"] if work_key in item["works"]],
     }
+
+
+def rule_requires_disposition(rule, operations):
+    """Review triggers remain visible; they neither grant nor prohibit routine recording.
+
+    Unknown/free-form applicability stays conservative. No natural-language
+    inference, automatic execution, expiry or rule consumption occurs here.
+    """
+    recording = {'add_work', 'move_active_pin', 'add_pin', 'update_pin', 'set_note', 'remove_note',
+                 'append_thread', 'set_permission', 'remove_permission', 'adopt_action_rules'}
+    return not (rule.get('time_role') == 'review_trigger'
+                and bool(rule.get('applies_to')) and set(operations) <= recording)
 
 
 def require_decision_context(context: dict, *, needs_pin: bool = True, needs_parent_intent: bool = True, operation_review=None) -> None:
@@ -512,5 +565,5 @@ def require_decision_context(context: dict, *, needs_pin: bool = True, needs_par
         raise ContextUnknown("current Pin set is unconfirmed")
     if context["permission_status"] != "confirmed" and not assessed('permissions'):
         raise ContextUnknown("current Permission set is unconfirmed")
-    if context["condition_status"] != "confirmed" and not assessed('conditions'):
-        raise ContextUnknown("current Condition set is unconfirmed")
+    if context["action_rule_status"] != "confirmed" and not assessed('action_rules'):
+        raise ContextUnknown("current Action Rule set is unconfirmed")

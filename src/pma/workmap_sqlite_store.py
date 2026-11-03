@@ -1,6 +1,6 @@
 """SQLite rollback Store for explicit, single-host Work Map connections.
 
-Preserves the 0.4.1 snapshot/Core contract. Selecting this adapter is not a
+Preserves the 0.4.2 snapshot/Core contract. Selecting this adapter is not a
 canonical migration or an authority grant. No external operation is executed.
 """
 from contextlib import contextmanager
@@ -20,9 +20,11 @@ class SQLiteStore:
             raise ValueError('absolute path required')
 
     @contextmanager
-    def connection(self, create=False):
+    def connection(self, create=False, *, read_only=False):
         # rw prevents an unavailable/mistyped Store silently becoming empty.
-        mode = 'rwc' if create else 'rw'
+        if create and read_only:
+            raise ValueError('cannot create through a read-only connection')
+        mode = 'ro' if read_only else ('rwc' if create else 'rw')
         if not create and not self.path.exists():
             raise MissingStore(str(self.path))
         db = None
@@ -31,7 +33,10 @@ class SQLiteStore:
                                  uri=True, timeout=2, isolation_level=None)
             if db.execute('PRAGMA journal_mode').fetchone()[0] != 'delete':
                 raise CorruptStore('SQLite Store requires rollback DELETE journal')
-            db.execute('PRAGMA synchronous=FULL')
+            if read_only:
+                db.execute('PRAGMA query_only=ON')
+            else:
+                db.execute('PRAGMA synchronous=FULL')
             if not create and db.execute('PRAGMA application_id').fetchone()[0] != 1095977033:
                 raise CorruptStore('not an Ashiba SQLite Store')
             yield db
@@ -54,8 +59,8 @@ class SQLiteStore:
             raise CorruptStore('snapshot hash differs')
         return CommittedVersion(token, _decode(raw, 'snapshot'))
 
-    def read(self):
-        with self.connection() as db:
+    def read(self, *, read_only=False):
+        with self.connection(read_only=read_only) as db:
             return self.version(db.execute(
                 'SELECT s.token,s.body FROM current c JOIN snapshots s ON s.token=c.token WHERE c.id=1'
             ).fetchone())

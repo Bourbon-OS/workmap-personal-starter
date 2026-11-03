@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from pma.workmap_contract import ContextUnknown, inspect_work, require_decision_context, validate_snapshot, confirm_new_work_collections, address_matches, current_subtree, subtree_addresses
 from pma.workmap_birth_confirmation import apply_birth_confirmation
+from pma.workmap_collection_confirmation import (apply_current_collections, confirmation_detail)
 from pma.workmap_owner_permission import validate_owner_permission, verify_permission_sources
 from pma.workmap_owner_scope import ReviewedOwnerScope, apply_owner_scope, limited_review_context
 from pma.workmap_pin_move import ReviewedPinMove, apply_pin_move
@@ -35,7 +36,11 @@ from pma.workmap_core import (
 )
 
 
-def _permission(snapshot: dict, work_key: str, operation: str, actor: str) -> None:
+def _permission(snapshot: dict, work_key: str, operation: str, actor: str, *, store_path=None) -> None:
+    if operation == 'add_work':
+        from pma.workmap_map_permission import require_add_work_permission
+        require_add_work_permission(snapshot, work_key, actor, store_path=store_path)
+        return
     applicable = [item for item in snapshot["map"]["permissions"] if work_key in item["targets"] and operation in item["operations"] and item.get("grantee") == actor]
     if not applicable or any(item["effect"] != "allow" for item in applicable):
         raise TransitionDenied("operation is not permitted for this actor and Work")
@@ -188,10 +193,10 @@ def _dependency_disposition(snapshot: dict, transition: dict, change: dict, entr
     context = inspect_work(snapshot, target)
     require_decision_context(context)
     expected, value = change["expected"], change["value"]
-    if (not isinstance(expected, dict) or set(expected) != {"dependency", "pins", "permissions", "conditions"}
+    if (not isinstance(expected, dict) or set(expected) != {"dependency", "pins", "permissions", "action_rules"}
             or not isinstance(expected["dependency"], dict) or not isinstance(value, dict)):
         raise TransitionError("exact dependency and decision context are required")
-    for name in ("pins", "permissions", "conditions"):
+    for name in ("pins", "permissions", "action_rules"):
         if expected[name] != context[name]:
             raise TransitionConflict("dependency decision context changed")
     dependency = expected["dependency"]
@@ -283,13 +288,13 @@ def _delegation(snapshot: dict, transition: dict, change: dict, entry: dict,
             scope_thread = json.loads(original['consequence']).get('coordinator_scope')
     if scope_thread is not None:
         context = limited_review_context(snapshot, target, actor, scope_thread)
-        expected = {name: snapshot['map'][name] for name in ('pins', 'permissions', 'conditions')}
+        expected = {name: snapshot['map'][name] for name in ('pins', 'permissions', 'action_rules')}
     else:
         context = inspect_work(snapshot, target)
         require_decision_context(context)
-        expected = {name: context[name] for name in ('pins', 'permissions', 'conditions')}
+        expected = {name: context[name] for name in ('pins', 'permissions', 'action_rules')}
     if change["expected"] != expected:
-        raise TransitionConflict("delegation Pin, Permission, or Condition changed")
+        raise TransitionConflict("delegation Pin, Permission, or Action Rule changed")
     if not any(pin["actor_id"] == actor and pin["mode"] == "active" for pin in context["pins"]):
         raise TransitionDenied("coordinator needs its own active Pin on this Work")
     if scope_thread is None:
@@ -368,7 +373,7 @@ def _delegation(snapshot: dict, transition: dict, change: dict, entry: dict,
 
 
 def _intent_update(snapshot: dict, transition: dict, change: dict, entry: dict,
-                   review: ReviewedOwnerIntent | None) -> None:
+                   review: ReviewedOwnerIntent | None, operation_review=None) -> None:
     target = change["target"]
     if target not in snapshot["map"]["members"]:
         raise TransitionConflict("target Work is not current")
@@ -376,11 +381,11 @@ def _intent_update(snapshot: dict, transition: dict, change: dict, entry: dict,
     context = inspect_work(snapshot, target)
     # Bind even incomplete collections without asserting their completeness.
     permissions = [item for item in snapshot["map"]["permissions"] if target in item["targets"]]
-    conditions = [item for item in snapshot["map"]["conditions"] if target in item["targets"]]
+    action_rules = [item for item in snapshot["map"]["action_rules"] if target in item["targets"]]
     expected = {
-        "intent": work["intent"], "permissions": permissions, "conditions": conditions,
+        "intent": work["intent"], "permissions": permissions, "action_rules": action_rules,
         "permission_status": context["permission_status"],
-        "condition_status": context["condition_status"],
+        "action_rule_status": context["action_rule_status"],
     }
     if change["expected"] != expected:
         raise TransitionConflict("Intent or correction authority/context changed")
@@ -416,12 +421,20 @@ def _intent_update(snapshot: dict, transition: dict, change: dict, entry: dict,
     if any(item["effect"] != "allow" and "update_work" in item["operations"] for item in permissions):
         raise TransitionDenied("recorded denial or unknown authority must be resolved before Intent update")
     if kind != "confirmation":
-        if context["permission_status"] != "confirmed" or context["condition_status"] != "confirmed":
-            raise ContextUnknown("Permission or Condition for Intent revision is unconfirmed")
+        from pma.workmap_decision_context import require_operation_context
+        require_operation_context(snapshot, transition, operation_review,
+                                  needs_pin=False, needs_parent_intent=False)
+        chain = {item['work_key'] for item in context['parent_chain']}
+        if any(chain.intersection(item['targets']) for item in snapshot['map']['action_rules']):
+            raise TransitionDenied('applicable Intent Action Rule needs disposition before revision')
+        if any(chain.intersection(item['targets']) and item.get('grantee') == transition['actor_id']
+               and 'update_work' in item['operations'] and item['effect'] != 'allow'
+               for item in snapshot['map']['permissions']):
+            raise TransitionDenied('applicable denial still blocks Intent revision')
         _permission(snapshot, target, "update_work", transition["actor_id"])
     # Only first confirmation may use the exact reviewed Owner decision as
     # authority in an incomplete migration. It creates no general Permission,
-    # clears no Condition, and permits no other operation on this Work.
+    # clears no Action Rule, and permits no other operation on this Work.
     source_map = snapshot["metadata"].get("work_sources", {})
     if not isinstance(source_map, dict) or not isinstance(source_map.get(target, {}), dict):
         raise TransitionError("existing Work provenance is unreadable")
@@ -444,7 +457,7 @@ def _intent_update(snapshot: dict, transition: dict, change: dict, entry: dict,
 def _handoff(snapshot: dict, transition: dict, change: dict, entry: dict,
              review: ReviewedOwnerHandoff | None) -> None:
     expected, value = change["expected"], change["value"]
-    if (not isinstance(expected, dict) or set(expected) != {"pin", "permission", "conditions"}
+    if (not isinstance(expected, dict) or set(expected) != {"pin", "permission", "action_rules"}
             or not isinstance(value, dict) or set(value) != {"to_actor", "owner_sources"}):
         raise TransitionError("handoff prior values or receiving scope fields are invalid")
     target = change["target"]
@@ -454,8 +467,8 @@ def _handoff(snapshot: dict, transition: dict, change: dict, entry: dict,
     # Administrative transfer preserves the known Work's purpose and scope.
     # Parent Intent is not inferred and purpose-dependent operations stay gated.
     require_decision_context(context, needs_parent_intent=False)
-    if context["conditions"] != expected["conditions"]:
-        raise TransitionConflict("handoff Conditions differ from expected values")
+    if context["action_rules"] != expected["action_rules"]:
+        raise TransitionConflict("handoff Action Rules differ from expected values")
     sources = value["owner_sources"]
     if (not isinstance(sources, list) or not sources
             or any(not isinstance(item, dict) or set(item) != {"ref", "sha256"}
@@ -504,6 +517,15 @@ def _handoff(snapshot: dict, transition: dict, change: dict, entry: dict,
 
 
 class CanonicalWorkMapCore(WorkMapCore):
+    def apply(self, transition: dict) -> dict:
+        if (isinstance(transition, dict) and isinstance(transition.get('changes'), list)
+                and len(transition['changes']) == 1
+                and isinstance(transition['changes'][0], dict)
+                and transition['changes'][0].get('op') == 'adopt_action_rules'):
+            from pma.workmap_action_rule_adoption import apply_adoption
+            return apply_adoption(self, transition)
+        return super().apply(transition)
+
     """A narrow writer; incomplete state blocks ordinary Map changes.
 
     Explicitly reviewed Owner instructions have separate additive repair paths.
@@ -518,8 +540,11 @@ class CanonicalWorkMapCore(WorkMapCore):
                  reviewed_owner_add: ReviewedOwnerAdd | None = None,
                  reviewed_owner_permission=None,
                  reviewed_birth_confirmation=None,
+                 reviewed_current_collections=None,
                  reviewed_decision_context=None,
-                 reviewed_close=None, close_evidence_resolver=repository_evidence):
+                 reviewed_close=None, close_evidence_resolver=repository_evidence,
+                 reviewed_transfer=None, transfer_source_store=None, transfer_evidence_repo=None,
+                 transfer_source_file=None, transfer_source_sha256=None):
         super().__init__(store, reviewed_decision_context=reviewed_decision_context)
         self.reviewed_owner_handoff = reviewed_owner_handoff
         self.reviewed_owner_intent = reviewed_owner_intent
@@ -530,13 +555,25 @@ class CanonicalWorkMapCore(WorkMapCore):
         self.reviewed_owner_add = reviewed_owner_add
         self.reviewed_owner_permission = reviewed_owner_permission
         self.reviewed_birth_confirmation = reviewed_birth_confirmation
+        self.reviewed_current_collections = reviewed_current_collections
         self.reviewed_close = reviewed_close
         self.close_evidence_resolver = close_evidence_resolver
+        self.reviewed_transfer = reviewed_transfer
+        self.transfer_source_store = transfer_source_store
+        self.transfer_source_file = transfer_source_file
+        self.transfer_source_sha256 = transfer_source_sha256
+        from pathlib import Path
+        self.transfer_evidence_repo = transfer_evidence_repo or Path(__file__).resolve().parents[2]
 
     def _before_commit(self, transition):
         super()._before_commit(transition)
+        if any(c.get('op') == 'accept_scope' for c in transition['changes']):
+            from pma.workmap_transfer import _source_proof
+            _source_proof(self, transition['changes'][0]['value']['envelope'], source_refs=transition['source_refs'])
         if self.reviewed_birth_confirmation is not None:
             verify_permission_sources(self.reviewed_birth_confirmation)
+        if self.reviewed_current_collections is not None:
+            verify_permission_sources(self.reviewed_current_collections)
         if self.reviewed_owner_permission is not None:
             verify_permission_sources(self.reviewed_owner_permission)
         if self.reviewed_owner_add is not None:
@@ -671,7 +708,7 @@ class CanonicalWorkMapCore(WorkMapCore):
             "intent", "source_refs", "preconditions", "changes", "thread_entries",
         }:
             raise TransitionError("transition fields are missing or unexpected")
-        if transition["format_version"] != "0.4.1" or transition["project_id"] != snapshot["project_id"]:
+        if transition["format_version"] != snapshot["format_version"] or transition["project_id"] != snapshot["project_id"]:
             raise TransitionConflict("format or project identity differs")
         reapplication = requests_reapplication(transition)
         if reapplication:
@@ -685,9 +722,19 @@ class CanonicalWorkMapCore(WorkMapCore):
             return
         is_close = (isinstance(transition['changes'], list) and len(transition['changes']) == 1
                     and isinstance(transition['changes'][0], dict) and transition['changes'][0].get('op') == 'close')
-        if transition["preconditions"] != [] and not reapplication and not is_close:
+        is_note = (isinstance(transition['changes'], list) and len(transition['changes']) == 1
+                   and isinstance(transition['changes'][0], dict) and transition['changes'][0].get('op') in ('set_note', 'remove_note'))
+        if transition["preconditions"] != [] and not reapplication and not is_close and not is_note:
             raise UnsupportedTransition("declared preconditions are not implemented")
         changes, entries = transition["changes"], transition["thread_entries"]
+        if snapshot['format_version'] == '0.4.3' and isinstance(changes, list) and all(isinstance(c, dict) for c in changes):
+            from pma.workmap_transfer import guard_actor_activation
+            guard_actor_activation(snapshot, transition)
+        if (isinstance(changes, list) and len(changes) == 1 and isinstance(changes[0], dict)
+                and changes[0].get('op') in ('release_scope', 'accept_scope')):
+            from pma.workmap_transfer import apply_transfer
+            apply_transfer(self, snapshot, transition, _permission)
+            return
         if (isinstance(changes, list) and len(changes) == 1 and isinstance(changes[0], dict)
                 and changes[0].get("op") == "update_pin" and entries == []):
             self._confirm_pin(snapshot, transition, changes[0])
@@ -700,30 +747,35 @@ class CanonicalWorkMapCore(WorkMapCore):
         operation, target = change.get("op"), change.get("target")
         if not _nonempty(target):
             raise TransitionError("change target is missing")
-        if operation == "set_note":
+        if operation in ("set_note", "remove_note"):
             validate_snapshot(snapshot)
             apply_note(snapshot, transition, change, entry, _permission, _thread, self.reviewed_decision_context)
             return
         if operation == "move_active_pin":
             validate_snapshot(snapshot)
-            apply_pin_move(snapshot, transition, change, entry, self.reviewed_pin_move, _permission, _thread)
+            apply_pin_move(snapshot, transition, change, entry, self.reviewed_pin_move, _permission, _thread,
+                           self.reviewed_decision_context)
             return
         if operation in ("accept_owner_scope", "renew_owner_scope", "append_scoped_thread"):
             validate_snapshot(snapshot)
             apply_owner_scope(snapshot, transition, change, entry, self.reviewed_owner_scope, _thread)
             return
         if operation == "append_thread" or (operation == "update_work" and isinstance(change.get("value"), dict) and set(change["value"]) == {"origin"}):
+            if operation == 'append_thread' and confirmation_detail(transition) is not None:
+                validate_snapshot(snapshot)
+                apply_current_collections(snapshot, transition, self.reviewed_current_collections, _permission, _thread)
+                return
             if operation == 'append_thread' and self.reviewed_birth_confirmation is not None:
                 validate_snapshot(snapshot)
                 apply_birth_confirmation(snapshot, transition, self.reviewed_birth_confirmation, self.store, _thread)
                 return
             WorkMapCore._validate_and_apply(self, snapshot, transition)
             return
-        supported = {"transfer_condition", "authorize_dependency_disposition", "remove_relation", "start_delegation", "finish_delegation", "handoff", "update_work", "add_work", "add_pin", "update_pin", "remove_pin", "set_permission", "remove_permission", "set_condition", "remove_condition", "add_relation", "reparent", "close", "reopen"}
+        supported = {"transfer_action_rule", "authorize_dependency_disposition", "remove_relation", "start_delegation", "finish_delegation", "handoff", "update_work", "add_work", "add_pin", "update_pin", "remove_pin", "set_permission", "remove_permission", "set_action_rule", "remove_action_rule", "add_relation", "reparent", "close", "reopen"}
         if operation not in supported:
             raise UnsupportedTransition("operation is not implemented")
         expected_fields = {
-            "transfer_condition": {"op", "target", "expected", "value"},
+            "transfer_action_rule": {"op", "target", "expected", "value"},
             "authorize_dependency_disposition": {"op", "target", "expected", "value"},
             "remove_relation": {"op", "target", "permission_id", "expected", "value"},
             "start_delegation": {"op", "target", "expected", "value"},
@@ -736,8 +788,8 @@ class CanonicalWorkMapCore(WorkMapCore):
             "remove_pin": {"op", "target", "pin_id", "expected"},
             "set_permission": {"op", "target", "permission_id", "expected", "value"},
             "remove_permission": {"op", "target", "permission_id", "expected"},
-            "set_condition": {"op", "target", "condition_id", "expected", "value"},
-            "remove_condition": {"op", "target", "condition_id", "expected"},
+            "set_action_rule": {"op", "target", "action_rule_id", "expected", "value"},
+            "remove_action_rule": {"op", "target", "action_rule_id", "expected"},
             "add_relation": {"op", "target", "value"},
             "reparent": {"op", "target", "expected_parent", "new_parent", "new_display_id"},
             "close": {"op", "target"},
@@ -750,44 +802,44 @@ class CanonicalWorkMapCore(WorkMapCore):
         members = current["members"]
         works = snapshot["works"]
         actor = transition["actor_id"]
-        if operation == "transfer_condition":
+        if operation == "transfer_action_rule":
             value, expected = change.get("value"), change.get("expected")
             if (not isinstance(entry, dict) or not isinstance(value, dict) or set(value) != {"new_target", "placement_basis", "placement_refs"}
-                    or not isinstance(expected, dict) or set(expected) != {"condition", "source_context", "destination_context"}):
-                raise TransitionError("Condition transfer scope and prior context are required")
+                    or not isinstance(expected, dict) or set(expected) != {"action_rule", "source_context", "destination_context"}):
+                raise TransitionError("Action Rule transfer scope and prior context are required")
             destination = value["new_target"]
             if target not in members or destination not in members or target == destination:
-                raise TransitionConflict("Condition transfer requires distinct current source and destination Works")
+                raise TransitionConflict("Action Rule transfer requires distinct current source and destination Works")
             if (not _nonempty(value["placement_basis"]) or not _refs(value["placement_refs"])
                     or not value["placement_refs"] or not set(value["placement_refs"]).issubset(transition["source_refs"])
                     or entry.get("why") != value["placement_basis"]):
-                raise TransitionError("Condition placement needs a reviewed scope basis and traceable sources")
+                raise TransitionError("Action Rule placement needs a reviewed scope basis and traceable sources")
             contexts = {key: inspect_work(snapshot, key) for key in (target, destination)}
             for key, name in ((target, "source_context"), (destination, "destination_context")):
                 context = contexts[key]
                 require_decision_context(context)
-                guarded = {field: context[field] for field in ("pins", "permissions", "conditions")}
+                guarded = {field: context[field] for field in ("pins", "permissions", "action_rules")}
                 if expected[name] != guarded:
-                    raise TransitionConflict("Condition transfer context differs from the expected value")
+                    raise TransitionConflict("Action Rule transfer context differs from the expected value")
             if not any(pin["actor_id"] == actor and pin["mode"] == "active" for pin in contexts[target]["pins"]):
-                raise TransitionDenied("Condition transfer needs the actor's own active source Pin")
-            for key, grant in ((target, "remove_condition"), (target, "append_thread"), (destination, "set_condition")):
+                raise TransitionDenied("Action Rule transfer needs the actor's own active source Pin")
+            for key, grant in ((target, "remove_action_rule"), (target, "append_thread"), (destination, "set_action_rule")):
                 _permission(snapshot, key, grant, actor)
-            old = expected["condition"]
+            old = expected["action_rule"]
             if not isinstance(old, dict) or old.get("targets") != [target]:
-                raise TransitionError("only one source Work's exclusive Condition can be transferred")
-            matches = [item for item in current["conditions"] if item["id"] == old.get("id")]
+                raise TransitionError("only one source Work's exclusive Action Rule can be transferred")
+            matches = [item for item in current["action_rules"] if item["id"] == old.get("id")]
             if matches != [old]:
-                raise TransitionConflict("Condition differs from the expected current value")
+                raise TransitionConflict("Action Rule differs from the expected current value")
             if not set(old["refs"]).issubset(transition["source_refs"]):
-                raise TransitionError("Condition transfer omits the original source")
+                raise TransitionError("Action Rule transfer omits the original source")
             new = copy.deepcopy(old)
             new["targets"] = [destination]
-            history = {"old_condition": old, "new_condition": new, "from_work": target, "to_work": destination}
+            history = {"old_action_rule": old, "new_action_rule": new, "from_work": target, "to_work": destination}
             if entry.get("consequence") != json.dumps(history, ensure_ascii=False, sort_keys=True, separators=(",", ":")):
-                raise TransitionError("Condition transfer needs exact old/new scope history")
-            _thread(snapshot, transition, entry, "condition_transferred", [target, destination])
-            current["conditions"][current["conditions"].index(matches[0])] = new
+                raise TransitionError("Action Rule transfer needs exact old/new scope history")
+            _thread(snapshot, transition, entry, "action_rule_transferred", [target, destination])
+            current["action_rules"][current["action_rules"].index(matches[0])] = new
         elif operation in ("authorize_dependency_disposition", "remove_relation"):
             _dependency_disposition(snapshot, transition, change, entry, self.reviewed_dependency_disposition,
                                     authorize=operation == "authorize_dependency_disposition")
@@ -802,6 +854,11 @@ class CanonicalWorkMapCore(WorkMapCore):
                 if target not in members:
                     raise TransitionConflict("target Work is not current")
                 require_decision_context(inspect_work(snapshot, target))
+                from pma.workmap_contract import rule_requires_disposition
+                chain = {p['work_key'] for p in inspect_work(snapshot, target)['parent_chain']}
+                if any(chain.intersection(rule['targets']) and rule_requires_disposition(rule, ['update_work'])
+                       for rule in current['action_rules']):
+                    raise TransitionDenied('applicable Action Rule still needs disposition')
                 _permission(snapshot, target, "update_work", actor)
                 if change["expected"] != {"name": works[target]["name"]}:
                     raise TransitionConflict("Work name differs from expected value")
@@ -813,13 +870,18 @@ class CanonicalWorkMapCore(WorkMapCore):
                     ensure_ascii=False, sort_keys=True, separators=(",", ":"))}
                 works[target]["name"] = value["name"]
             else:
-                _intent_update(snapshot, transition, change, entry, self.reviewed_owner_intent)
+                _intent_update(snapshot, transition, change, entry, self.reviewed_owner_intent,
+                               self.reviewed_decision_context)
         elif operation == 'add_work' and is_root_add(change):
             if self.reviewed_owner_add is None:
                 raise TransitionDenied('root registration requires exact Owner review')
             validate_owner_add(snapshot, transition, self.reviewed_owner_add)
             _register_work(snapshot, transition, change, entry, self.reviewed_owner_add)
         elif operation == "reopen":
+            if snapshot['format_version'] == '0.4.3':
+                from pma.workmap_transfer import moved_out
+                if moved_out(snapshot, target):
+                    raise TransitionConflict('Work was moved out; a past close cannot reopen it here')
             if target in members or target not in snapshot["retirements"]:
                 raise TransitionConflict("Work has no confirmed prior close")
             parent = change.get("parent")
@@ -838,15 +900,22 @@ class CanonicalWorkMapCore(WorkMapCore):
             if target not in members:
                 raise TransitionConflict("target Work is not current")
             if operation == 'add_work' and self.reviewed_owner_add is not None:
-                validate_owner_add(snapshot, transition, self.reviewed_owner_add)
+                validate_owner_add(snapshot, transition, self.reviewed_owner_add,
+                                   store_path=getattr(self.store, 'path', getattr(self.store, 'directory', None)))
             elif operation == 'set_permission' and self.reviewed_owner_permission is not None:
                 entry = {**entry, "consequence": validate_owner_permission(snapshot, transition, self.reviewed_owner_permission, self.reviewed_decision_context)}
             else:
                 from pma.workmap_decision_context import require_operation_context
                 require_operation_context(snapshot, transition, self.reviewed_decision_context,
                                           needs_pin=operation not in ("set_permission", "remove_permission"))
-                _permission(snapshot, target, operation, actor)
+                _permission(snapshot, target, operation, actor,
+                            store_path=getattr(self.store, 'path', getattr(self.store, 'directory', None)))
             if operation == "add_work":
+                from pma.workmap_contract import rule_requires_disposition
+                chain = {w['work_key'] for w in inspect_work(snapshot, target)['parent_chain']}
+                if any(chain.intersection(r['targets']) and rule_requires_disposition(r, ['add_work'])
+                       for r in current['action_rules']):
+                    raise TransitionDenied('applicable Action Rule still needs disposition')
                 _register_work(snapshot, transition, change, entry, self.reviewed_owner_add)
             elif operation in ("add_pin", "update_pin", "remove_pin"):
                 pins = current["pins"]
@@ -888,21 +957,23 @@ class CanonicalWorkMapCore(WorkMapCore):
                     value = change["value"]
                     if not isinstance(value, dict) or value.get("id") != permission_id or value.get("targets") != [target] or not _refs(value.get("source_refs")) or not set(transition["source_refs"]).issubset(value["source_refs"]):
                         raise TransitionError("Permission target or source is invalid")
+                    from pma.workmap_map_permission import validate_map_add_grant
+                    validate_map_add_grant(snapshot, value, getattr(self.store, 'path', getattr(self.store, 'directory', None)))
                     permissions.append(copy.deepcopy(value))
-            elif operation in ("set_condition", "remove_condition"):
-                conditions = current["conditions"]
-                condition_id = change.get("condition_id")
-                old = next((item for item in conditions if item["id"] == condition_id), None)
+            elif operation in ("set_action_rule", "remove_action_rule"):
+                action_rules = current["action_rules"]
+                action_rule_id = change.get("action_rule_id")
+                old = next((item for item in action_rules if item["id"] == action_rule_id), None)
                 if old != change.get("expected"):
-                    raise TransitionConflict("Condition differs from the expected value")
-                _thread(snapshot, transition, entry, "condition_changed", [target])
+                    raise TransitionConflict("Action Rule differs from the expected value")
+                _thread(snapshot, transition, entry, "action_rule_changed", [target])
                 if old is not None:
-                    conditions.remove(old)
-                if operation == "set_condition":
+                    action_rules.remove(old)
+                if operation == "set_action_rule":
                     value = change.get("value")
-                    if not isinstance(value, dict) or value.get("id") != condition_id or target not in value.get("targets", []) or not set(transition["source_refs"]).issubset(value.get("refs", [])):
-                        raise TransitionError("Condition target or source is invalid")
-                    conditions.append(copy.deepcopy(value))
+                    if not isinstance(value, dict) or value.get("id") != action_rule_id or target not in value.get("targets", []) or not set(transition["source_refs"]).issubset(value.get("refs", [])):
+                        raise TransitionError("Action Rule target or source is invalid")
+                    action_rules.append(copy.deepcopy(value))
             elif operation == "add_relation":
                 relation = change.get("value")
                 if not isinstance(relation, dict) or relation.get("kind") != "dependency" or relation.get("consumer") != target or any(item["id"] == relation.get("id") for item in current["relations"]):
@@ -947,8 +1018,8 @@ class CanonicalWorkMapCore(WorkMapCore):
                     raise TransitionConflict("current Pin remains")
                 if any(item["kind"] == "dependency" and item["consumer"] == target for item in current["relations"]):
                     raise TransitionConflict("current Dependency needs disposition")
-                if any(target in item["targets"] for item in current["conditions"]):
-                    raise TransitionConflict("current Condition needs disposition")
+                if any(target in item["targets"] for item in current["action_rules"]):
+                    raise TransitionConflict("current Action Rule needs disposition")
                 if any(target in item["targets"] and any(key != target for key in item["targets"])
                        for item in current["permissions"]):
                     raise TransitionConflict("shared Permission needs explicit disposition before close")
@@ -967,7 +1038,7 @@ class CanonicalWorkMapCore(WorkMapCore):
                 current["permissions"] = [item for item in current["permissions"] if target not in item["targets"]]
                 completeness = snapshot["metadata"].get("completeness")
                 if isinstance(completeness, dict):
-                    for name in ("pins", "permissions", "conditions"):
+                    for name in ("pins", "permissions", "action_rules"):
                         scope = completeness.get(name)
                         if isinstance(scope, dict):
                             scope["confirmed_work_keys"] = [key for key in scope["confirmed_work_keys"] if key != target]
