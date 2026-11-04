@@ -3,13 +3,13 @@
   "files": {
     ".gitignore": "54c18ce80e83971950d6e33ecb6860b8df293919012b8a04187ea7c8424c5a91",
     "AI_FIRST_USE.md": "49f9aa9f0e5e24bd16dbb554c70e9fac0e952de2af7faf2015ce5fcfa771b313",
-    "HANDOVER.md": "fb96ded2949cd0a91cf0c2f3246113c8a1c6cb28c58016dcd475a31e6f38ae3c",
+    "HANDOVER.md": "f1276d0b0010614b815064a42701a62f8b8783358b51aab7d2eca26b6ed3d696",
     "LICENSE": "27a5e029533d0c145bbd3436b4849fe76a2097cc59c0f6d9e69e9ecc3e0f9979",
     "LICENSE-DOCS.md": "20228ed1f60c4c0201bdc7c5eca2d5318dca82eb9dc51c8fd5faf0b92e9b8f86",
     "NAME_ORIGIN.md": "e2d9778afc942cc34ae47e89b858f266f6073953411a720b687e7169a511c73a",
     "NOTICE.md": "2e6dde8e2ae7afdaf95c12b9b8b7f823d77cad580893fb80ca15af6c1236cc90",
-    "README.md": "0cf33866eec0cf2a63931782933fd3700f99e885bbb8853e55583a1e81acb98f",
-    "RELEASE_NOTES.md": "1c3aedae410b35ec2029fc19f94aa0941ebf16638ba169223bce9a47c448dac9",
+    "README.md": "11a66360cd14dcf8534a57b3c73ea655f6c35b727c041f8acf1fa35f61695129",
+    "RELEASE_NOTES.md": "cd72b6c7927cea93f2444c41651a4bc3ff160d628f355f444cd03d070ed8443c",
     "USAGE.md": "3443b154254849f17582faded2ca18639dbd0c50082525a7fe461b4226788f37",
     "WorkMap.pyw": "c9ef50ce11e2c6e9716d0007779b70053d49745963d686233c5464173fc2da81",
     "check.py": "af1dd410784a6e8a477cba2a08f0678dbf5abe84751b712ae2a20c0d8cb54b1d",
@@ -69,29 +69,29 @@
   },
   "distribution": {
     "product": "Work Map / Work Thread Personal Local Trial",
-    "version": "0.2.4",
+    "version": "0.2.5",
     "stage": "trial",
-    "source_artifact_sha256": "7a8c04a1ac40675f476e9d6e935c67fe717cd5f8e285811a797d3376e6f1ecc6",
-    "previous_public_version": "0.2.3",
-    "previous_public_commit": "f6440c6ff5779e9b2b27a13fa1be96ab7ed3aac1",
+    "source_artifact_sha256": "b7bf5b8db2a611b4fa92a69f221d1a3d00f41da54d288c210cc25b62992d3500",
+    "previous_public_version": "0.2.4",
+    "previous_public_commit": "ec3ad7003e9281450390ff9e692280c4a312aa73",
     "packaging_changes": [
       {
-        "path": "AI_FIRST_USE.md",
-        "source_sha256": "a44dc01caeb891af7143073fa71e7dd36a4179f8d173a7019d6cb14afe7ee310",
-        "sha256": "49f9aa9f0e5e24bd16dbb554c70e9fac0e952de2af7faf2015ce5fcfa771b313",
-        "reason": "move only strong closing delimiter in line11; all words and other bytes unchanged"
+        "path": "README.md",
+        "source_sha256": "0cf33866eec0cf2a63931782933fd3700f99e885bbb8853e55583a1e81acb98f",
+        "sha256": "11a66360cd14dcf8534a57b3c73ea655f6c35b727c041f8acf1fa35f61695129",
+        "reason": "exact Owner-adopted 2026-11-05 README; human and AI use clarified"
       },
       {
         "path": "HANDOVER.md",
-        "source_sha256": "888c10f5ef6aec8b7f07cce672d012619aa6151a36b79f0d3e0c9f700d0a81f5",
-        "sha256": "fb96ded2949cd0a91cf0c2f3246113c8a1c6cb28c58016dcd475a31e6f38ae3c",
-        "reason": "one public-version token v0.2.3 to v0.2.4; data format 0.4.2 unchanged"
+        "source_sha256": "fb96ded2949cd0a91cf0c2f3246113c8a1c6cb28c58016dcd475a31e6f38ae3c",
+        "sha256": "f1276d0b0010614b815064a42701a62f8b8783358b51aab7d2eca26b6ed3d696",
+        "reason": "one public-version token v0.2.4 to v0.2.5; data format0.4.2 unchanged"
       },
       {
         "path": "RELEASE_NOTES.md",
-        "source_sha256": "417882c7516855d5d86b97b83f6a738d1a2be67e6913cfeb65fa2702196368b8",
-        "sha256": "1c3aedae410b35ec2029fc19f94aa0941ebf16638ba169223bce9a47c448dac9",
-        "reason": "describe the one formatting fix and verification boundary"
+        "source_sha256": "1c3aedae410b35ec2029fc19f94aa0941ebf16638ba169223bce9a47c448dac9",
+        "sha256": "cd72b6c7927cea93f2444c41651a4bc3ff160d628f355f444cd03d070ed8443c",
+        "reason": "prepend bounded README-update note; previous note body retained byte-for-byte"
       }
     ]
   }
