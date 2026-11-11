@@ -18,6 +18,8 @@ from tools.backup_workmap_store import (export_one, recover_isolated, inspect_re
 
 DB = ROOT / 'data' / 'workmap.sqlite3'
 OWNER = 'actor:local-owner'
+NEW_COMPRESSION = 'a'
+NEW_RETENTION = 'current_and_previous'
 
 
 def initial_pin_review(state, request, args):
@@ -112,7 +114,11 @@ def restore_request(args=None, *, resume=None):
                 raise ValueError('復旧先に別の状態があります。上書きせず現在値を確認してください。')
             return {'result': {'result': 'applied'}, 'readback': {'status': 'confirmed', 'revision': state['revision']}}
         args = argparse.Namespace(**bundle['inputs'])
+        # Old saved restores retain their original raw/all policy on resume.
+        compression = bundle['inputs'].get('compression', 'none')
+        retention = bundle['inputs'].get('retention', 'all')
     else:
+        compression, retention = NEW_COMPRESSION, NEW_RETENTION
         if DB.exists():
             raise ValueError('現用DBは上書きしません。全アプリを閉じ、元DBとdocsを保全して退避してから復旧してください。')
         source = owner_source(args.owner_instruction, OWNER, args.project_id)
@@ -130,7 +136,8 @@ def restore_request(args=None, *, resume=None):
         state.update(revision=uuid4().hex, recorded_at=datetime.now(timezone.utc).isoformat())
         bundle = {'operation': 'restore', 'store_binding': str(DB.resolve()),
                   'actor': OWNER, 'recorded_at': state['recorded_at'], 'source_revision': original['revision'],
-                  'inputs': {k: str(getattr(args,k)) for k in ('backup','candidate','sha256','candidate_token','project_id','owner_instruction')},
+                  'inputs': {**{k: str(getattr(args,k)) for k in ('backup','candidate','sha256','candidate_token','project_id','owner_instruction')},
+                             'compression': compression, 'retention': retention},
                   'owner_source': source, 'owner_source_sha256': hashlib.sha256((ROOT/source[5:]).read_bytes()).hexdigest(),
                   'new_revision': state['revision'], 'restored_digest': _digest(state)}
         with path.open('x', encoding='utf-8') as stream:
@@ -139,7 +146,8 @@ def restore_request(args=None, *, resume=None):
             os.fsync(stream.fileno())
     if hashlib.sha256((ROOT/bundle['owner_source'][5:]).read_bytes()).hexdigest() != bundle['owner_source_sha256']:
         raise ValueError('復旧のOwner指示が変わっています。再判断してください。')
-    result = restore_verified(state, files, DB, ROOT, backend='sqlite')
+    result = restore_verified(state, files, DB, ROOT, backend='sqlite',
+                              compression=compression, retention=retention)
     return {'request_path': str(path), 'result': {'result': 'applied', **result},
             'readback': {'status': 'confirmed', 'revision': state['revision'], 'thread_status': thread_status},
             'boundary': 'selected backup revision restored; external artifacts and later lost updates are not proved recovered'}
@@ -318,7 +326,8 @@ def main(argv=None):
                     'map': {k: [] for k in ('members', 'relations', 'pins', 'permissions', 'action_rules', 'notes')},
                     'retirements': {}, 'thread_entries': [], 'receipts': {},
                     'metadata': {'completeness': 'full', 'store_role': 'canonical_current', 'basis': 'new_empty_personal_store'}}
-                SQLiteStore(DB).initialize(validate_snapshot(state))
+                SQLiteStore(DB).initialize(validate_snapshot(state),
+                                           compression=NEW_COMPRESSION, retention=NEW_RETENTION)
             (ROOT / 'docs/work-management/evidence').mkdir(parents=True, exist_ok=True)
             result = add_work(DB, backend='sqlite', actor=args.actor,
                 parent=getattr(args, 'parent', None), name=args.name, intent=args.intent, origin=args.origin,
@@ -387,7 +396,8 @@ def main(argv=None):
             if args.target.resolve() == DB:
                 raise ValueError('復旧確認先には現用DBを指定できません。')
             args.target.resolve().parent.mkdir(parents=True, exist_ok=True)
-            result = recover_isolated(args.backup.resolve(), args.target.resolve(), args.sha256, backend='sqlite')
+            result = recover_isolated(args.backup.resolve(), args.target.resolve(), args.sha256, backend='sqlite',
+                                      compression=NEW_COMPRESSION, retention=NEW_RETENTION)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if 'readback' in result: return 0 if result['readback']['status'] == 'confirmed' else 2
         if 'result' in result and isinstance(result['result'], dict) and result['result'].get('result') != 'applied': return 2

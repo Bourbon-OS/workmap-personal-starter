@@ -29,6 +29,14 @@ class MissingStore(StoreError):
     """There is no committed root at this location."""
 
 
+class MissingRetainedSnapshot(StoreError):
+    """A finite comparison cache no longer holds this version; not corruption."""
+
+    def __init__(self, token):
+        self.token = token
+        super().__init__('comparison snapshot is no longer retained: ' + str(token))
+
+
 class StoreConflict(StoreError):
     """The caller's expected committed root is no longer current."""
 

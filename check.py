@@ -1,14 +1,23 @@
 """Check a disposable copy; never opens the user's data/workmap.sqlite3."""
 import json
+from contextlib import closing
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent
+
+
+def storage_shape(path):
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+        return (db.execute('PRAGMA application_id').fetchone()[0],
+                db.execute('PRAGMA user_version').fetchone()[0],
+                db.execute('SELECT count(*) FROM snapshots').fetchone()[0])
 
 
 def copy_pin_guide(target):
@@ -40,6 +49,7 @@ class PersonalStarterCheck(unittest.TestCase):
             common = ['--name', '合成試験', '--intent', '判断理由を保つ', '--origin', '隔離確認', '--owner-instruction', 'この合成Workを登録する']
             first = json.loads(run('init', *common))
             self.assertEqual(first['readback']['display_id'], 'W0')
+            self.assertEqual(storage_shape(target/'data/workmap.sqlite3'), (0x41534841, 2, 2))
             self.assertIn('W0', run('show'))
             run('init', *common, success=False)
             added = json.loads(run('add', '--parent', 'W0', *common))
@@ -94,10 +104,12 @@ class PersonalStarterCheck(unittest.TestCase):
             backup_dir = target / 'backups'; backup_dir.mkdir()
             backup = backup_dir / 'backup.json'
             result = json.loads(run('backup', '--output', str(backup)))
+            self.assertEqual(storage_shape(target/'data/workmap.sqlite3'), (0x41534841, 2, 2))
             candidate = target / 'recovery/candidate.sqlite3'
             restored = json.loads(run('recover-check', '--backup', str(backup), '--sha256', result['sha256'], '--target', str(candidate)))
             self.assertEqual(restored['management_recovery'], 'verified')
             self.assertEqual(restored['role'], 'recovery_candidate')
+            self.assertEqual(storage_shape(candidate), (0x41534841, 2, 1))
             run('recover-check', '--backup', str(backup), '--sha256', result['sha256'], '--target', str(target / 'data/workmap.sqlite3'), success=False)
             self.assertIn('W1.1', run('show'))
             view = json.loads(run('recovery-show', '--candidate', str(candidate), '--work', closed_key, '--thread'))
@@ -112,6 +124,7 @@ class PersonalStarterCheck(unittest.TestCase):
             original_bytes = (target / 'data/workmap.sqlite3').read_bytes()
             (target / 'data/workmap.sqlite3').rename(original)
             recovered = json.loads(run('restore',*restore_args))
+            self.assertEqual(storage_shape(target/'data/workmap.sqlite3'), (0x41534841, 2, 1))
             self.assertNotEqual(recovered['readback']['revision'],result['revision'])
             self.assertEqual(json.loads(run('resume','--request',recovered['request_path']))['readback']['status'],'confirmed')
             self.assertIn('W1.1',run('show'))

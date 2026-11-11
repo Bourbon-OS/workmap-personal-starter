@@ -96,7 +96,8 @@ def export_one(store_path: Path, output_path: Path, *, backend: str = 'text',
             'backup_boundary': 'backup JSON plus required_thread_files relative to its directory'}
 
 
-def recover_isolated(backup_path: Path, target_path: Path, expected_sha256: str, *, backend: str = 'text') -> dict:
+def recover_isolated(backup_path: Path, target_path: Path, expected_sha256: str, *, backend: str = 'text',
+                     compression='none', retention='all') -> dict:
     raw = backup_path.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     if digest != expected_sha256.lower():
@@ -115,7 +116,10 @@ def recover_isolated(backup_path: Path, target_path: Path, expected_sha256: str,
     snapshot["metadata"]["store_role"] = "recovery_candidate"
     snapshot["metadata"]["recovery_source_sha256"] = digest
     target = open_store(target_path, backend)
-    committed = target.initialize(snapshot)
+    if backend != 'sqlite' and (compression != 'none' or retention != 'all'):
+        raise ValueError('physical compression/retention options require a new SQLite candidate')
+    committed = (target.initialize(snapshot, compression=compression, retention=retention)
+                 if backend == 'sqlite' else target.initialize(snapshot))
     if validate_snapshot(target.read().snapshot) != snapshot or committed.snapshot != snapshot:
         raise RuntimeError("isolated recovery differs from backup")
     # A candidate remains isolated even if companion Evidence is missing or
@@ -193,18 +197,25 @@ def prepare_restore(backup_path, candidate_path, expected_sha256, candidate_toke
     return original, files, view['status']
 
 
-def restore_verified(snapshot, files, target_path, evidence_root, *, backend='sqlite'):
+def restore_verified(snapshot, files, target_path, evidence_root, *, backend='sqlite',
+                     compression='none', retention='all'):
     """Only initialize an absent destination; never overwrite/rename a live DB."""
     target_path = Path(target_path).resolve()
     if target_path.exists():
         raise FileExistsError('preserve the original DB first; recovery never overwrites an existing destination')
+    if backend != 'sqlite' and (compression != 'none' or retention != 'all'):
+        raise ValueError('physical compression/retention options require a new SQLite destination')
+    if compression not in ('none', 'a') or retention not in ('all', 'current_and_previous'):
+        raise ValueError('unsupported SQLite recovery policy')
     if backend == 'sqlite' and any(Path(str(target_path) + suffix).exists() for suffix in ('-journal','-wal','-shm')):
         raise FileExistsError('preserve the original SQLite companion files before restoring to this location')
     state = validate_snapshot(snapshot)
     if state['metadata'].get('store_role') != 'canonical_current':
         raise ValueError('restore input must be the explicitly reviewed canonical snapshot')
     _copy_thread_files(files, Path(evidence_root).resolve())
-    committed = open_store(target_path, backend).initialize(state)
+    target = open_store(target_path, backend)
+    committed = (target.initialize(state, compression=compression, retention=retention)
+                 if backend == 'sqlite' else target.initialize(state))
     if _digest(committed.snapshot) != _digest(state):
         raise RuntimeError('restored Store differs from reviewed input')
     return {'revision': state['revision'], 'project_id': state['project_id'], 'role': 'canonical_current'}
@@ -221,10 +232,14 @@ def main() -> None:
     recovering.add_argument("--backup", type=Path, required=True)
     recovering.add_argument("--target", type=Path, required=True)
     recovering.add_argument("--expected-sha256", required=True)
+    recovering.add_argument('--compression', choices=('none', 'a'), default='none')
+    recovering.add_argument('--retention', choices=('all', 'current_and_previous'), default='all',
+                            help='Explicit new-candidate policy; never alters the backup or an existing Store')
     exporting.add_argument("--backend", choices=("text", "sqlite"), default="text")
     recovering.add_argument("--backend", choices=("text", "sqlite"), default="text")
     args = parser.parse_args()
-    result = export_one(args.store, args.output, backend=args.backend, evidence_repo=args.evidence_repo) if args.command == "export" else recover_isolated(args.backup, args.target, args.expected_sha256, backend=args.backend)
+    result = export_one(args.store, args.output, backend=args.backend, evidence_repo=args.evidence_repo) if args.command == "export" else recover_isolated(args.backup, args.target, args.expected_sha256, backend=args.backend,
+        compression=args.compression, retention=args.retention)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 

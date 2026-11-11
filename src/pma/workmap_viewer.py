@@ -75,8 +75,11 @@ def _check_source_paths(source):
 def read_map_title(source: OpenMap) -> str:
     """Read only a menu label, not a verified snapshot or any decision data."""
     _check_source_paths(source)
-    with SQLiteStore(source.path).connection(read_only=True) as db:
-        row = db.execute("""
+    store = SQLiteStore(source.path)
+    with store.connection(read_only=True) as db:
+        compressed = store._profile(db) == 'a'
+        if not compressed:
+            row = db.execute("""
             WITH header AS MATERIALIZED (
               SELECT json_extract(CAST(s.body AS TEXT), '$.project_id', '$.metadata.store_role',
                                   '$.works', '$.map.members', '$.map.relations') AS doc
@@ -89,7 +92,18 @@ def read_map_title(source: OpenMap) -> str:
                     (SELECT json_extract(r.value, '$.child') FROM json_each(doc, '$[4]') r
                       WHERE json_extract(r.value, '$.kind') = 'parent'))
             FROM header
-        """).fetchone()
+            """).fetchone()
+    if compressed:
+        # Reuse the Store's bounded expansion and hash checks; no Thread view.
+        snapshot = store.read(read_only=True).snapshot
+        try:
+            members = set(snapshot['map']['members'])
+            children = {r['child'] for r in snapshot['map']['relations'] if r['kind'] == 'parent'}
+            names = [work['name'] for key, work in snapshot['works'].items()
+                     if key in members and key not in children]
+            row = (snapshot['project_id'], snapshot['metadata'].get('store_role'), ' / '.join(names))
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise ValueError('現在の正本の名前を確認できません。') from exc
     if row is None or row[1] != 'canonical_current' or not isinstance(row[0], str):
         raise ValueError('現在の正本の名前を確認できません。')
     if source.project_id is not None and source.project_id != row[0]:

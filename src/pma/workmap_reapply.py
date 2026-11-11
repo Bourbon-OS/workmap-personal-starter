@@ -5,7 +5,7 @@ import copy
 from pma.workmap_contract import validate_snapshot, inspect_work, _collection_status
 from pma.workmap_core import TransitionConflict, TransitionError, UnsupportedTransition, _nonempty, _digest
 from pma.workmap_pin_move import move_guard, _pin, move_note_id
-from pma.workmap_store import snapshot_object_id
+from pma.workmap_store import MissingRetainedSnapshot, snapshot_object_id
 
 PROJECTION = "pin_move_reapply_v1"
 
@@ -76,7 +76,10 @@ def check_reapplication(store, current: dict, request: dict) -> None:
     object_id = expected["object_sha256"]
     if not isinstance(object_id, str) or len(object_id) != 64 or any(c not in "0123456789abcdef" for c in object_id):
         raise TransitionError("invalid base object reference")
-    base = current if current["revision"] == request["base_revision"] else validate_snapshot(store.read_retained_snapshot(object_id))
+    try:
+        base = current if current["revision"] == request["base_revision"] else validate_snapshot(store.read_retained_snapshot(object_id))
+    except MissingRetainedSnapshot as exc:
+        raise TransitionConflict('comparison copy expired; check the saved request result, reread the current Map and make a new decision without rewriting this request') from exc
     if (snapshot_object_id(base) != object_id or base["revision"] != request["base_revision"]
             or base["project_id"] != current["project_id"]):
         raise TransitionConflict("retained base identity or content differs")
