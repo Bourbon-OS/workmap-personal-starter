@@ -123,6 +123,22 @@ def _history(base, current):
     return suffix
 
 
+def guard_review_history(suffix, related, actors, request):
+    """A subject reread cannot revive an ended acceptance or changed authority."""
+    for entry in suffix:
+        if related.intersection(entry['works']) and entry['kind'] in AUTHORITY_HISTORY:
+            raise TransitionDenied('related authority/purpose history changed; renewed scope is required')
+        if (entry['kind'] in {'pin_added', 'pin_changed', 'pin_removed', 'pin_active_moved'}
+                and entry['actor'] in actors):
+            raise TransitionDenied('accepted participant Pin history changed')
+        if entry['kind'] == 'delegation_finished':
+            try:
+                if json.loads(entry['consequence'])['registration'] == request['transition_id']:
+                    raise TransitionDenied('review registration was ended; it cannot be revived')
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ContextUnknown('delegation disposition history is unreadable') from exc
+
+
 def assess_current_review(base, current, request, *, scope_context):
     """Return ready/needs_reconsideration; invalid authority raises instead."""
     related, actors = scope_context(base, request, allow_action_rules=True)
@@ -147,19 +163,7 @@ def assess_current_review(base, current, request, *, scope_context):
     for delta in changes:
         if not any(delta['field'] in _effects(e) and set(delta['works']).intersection(e['works']) for e in suffix):
             raise ContextUnknown('changed data is not covered by committed operation history: ' + delta['field'])
-    for entry in suffix:
-        hit = all_related.intersection(entry['works'])
-        if hit and entry['kind'] in AUTHORITY_HISTORY:
-            raise TransitionDenied('related authority/purpose history changed; renewed scope is required')
-        if (entry['kind'] in {'pin_added', 'pin_changed', 'pin_removed', 'pin_active_moved'}
-                and entry['actor'] in actors):
-            raise TransitionDenied('accepted participant Pin history changed')
-        if entry['kind'] == 'delegation_finished':
-            try:
-                if json.loads(entry['consequence'])['registration'] == request['transition_id']:
-                    raise TransitionDenied('review registration was ended; it cannot be revived')
-            except (ValueError, KeyError, TypeError) as exc:
-                raise ContextUnknown('delegation disposition history is unreadable') from exc
+    guard_review_history(suffix, all_related, actors, request)
     relevant = [d for d in changes if all_related.intersection(d['works'])]
     # Direct child/sibling membership and labels are part of the reader's brief.
     relatives = {v['work_key'] for s in (base, current) for name in ('children', 'siblings')
@@ -177,19 +181,21 @@ def assess_current_review(base, current, request, *, scope_context):
 
 def acknowledge_current_subject(store, token, current, assessment, request, *, scope_context):
     """Explicit cooperating reviewer input after reread, not automated approval."""
-    if token is None or assessment['status'] == 'ready':
+    if token is None:
         return assessment
     if (not isinstance(token, str) or len(token) != 64
             or any(c not in '0123456789abcdef' for c in token)):
         raise TransitionDenied('reconsidered token must be a reviewed current snapshot hash')
-    reviewed = validate_snapshot(store.read_retained_snapshot(token))
+    reviewed = (current if token == snapshot_object_id(current)
+                else validate_snapshot(store.read_retained_snapshot(token)))
     if (snapshot_object_id(reviewed) != token or reviewed['project_id'] != current['project_id']
             or reviewed['metadata'].get('store_role') != 'canonical_current'
             or reviewed['receipts'].get(request['transition_id']) != current['receipts'].get(request['transition_id'])):
         raise TransitionConflict('reconsidered subject does not retain the original registration')
     if reviewed == current:
-        return {**assessment, 'status': 'ready', 'impact': 'reconsidered'}
+        return {**assessment, 'status': 'ready', 'impact': 'reconsidered', 'comparison_token': token}
     # A prior explicit reconsideration survives subsequent unrelated updates.
     # A new relevant update is returned to the reviewer, not auto-acknowledged.
     delta = assess_current_review(reviewed, current, request, scope_context=scope_context)
-    return {**delta, 'impact': 'reconsidered' if delta['status'] == 'ready' else delta['impact']}
+    return {**delta, 'impact': 'reconsidered' if delta['status'] == 'ready' else delta['impact'],
+            'comparison_token': token}

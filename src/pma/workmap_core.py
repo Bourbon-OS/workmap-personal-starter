@@ -193,9 +193,16 @@ class WorkMapCore:
             }
             receipts[transition_id] = receipt
             validate_snapshot(snapshot)
+            # Compression must finish before existing final external-source
+            # checks. Other Store implementations retain their current path.
+            prepare = getattr(self.store, 'prepare_commit', None)
+            prepared = prepare(committed.token, snapshot) if callable(prepare) else None
             self._before_commit(transition)
             try:
-                self.store.commit_validated(committed.token, snapshot)
+                if prepared is None:
+                    self.store.commit_validated(committed.token, snapshot)
+                else:
+                    prepared.commit()
             except StoreConflict as exc:
                 latest = validate_snapshot(self.store.read().snapshot).get("receipts", {}).get(transition_id)
                 if _matching_receipt(latest, transition_id, request_hash):

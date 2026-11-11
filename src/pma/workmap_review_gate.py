@@ -15,7 +15,7 @@ from pma.workmap_canonical_core import ReviewedDelegation, validate_review_scope
 from pma.workmap_contract import ContextUnknown, _collection_status, inspect_work, require_decision_context, validate_snapshot
 from pma.workmap_core import TransitionConflict, TransitionDenied, TransitionError, _digest
 from pma.workmap_owner_scope import context_guard, limited_review_context, scope_history
-from pma.workmap_store import snapshot_object_id
+from pma.workmap_store import MissingRetainedSnapshot, snapshot_object_id
 
 
 def _bound_file(repo: Path, binding: dict, prefix: str, suffix: str) -> Path:
@@ -164,9 +164,103 @@ def _check_fixed_continuation(base: dict, current: dict, request: dict) -> None:
             raise TransitionConflict('current data is not fully explained by unrelated registrations')
 
 
-def check_review_gate(store, request: dict, actor_id: str, repo: Path, *,
+def _purpose_chain(state, request):
+    return [[w['work_key'], w['intent']] for w in
+            inspect_work(state, request['changes'][0]['target'])['parent_chain']]
+
+
+def _store_binding(store):
+    location = getattr(store, 'path', getattr(store, 'directory', None))
+    return {'type': type(store).__name__, 'path': str(Path(location).resolve())}
+
+
+def _review_projection(state):
+    return _digest({k: v for k, v in state.items() if k not in {'thread_entries', 'receipts'}})
+
+
+def _comparison_result(store, state, request, actor_id, registration_token, purpose_chain):
+    """Small cooperating-operator readback, not a grant or a new Store record."""
+    return {'store': _store_binding(store), 'project_id': state['project_id'], 'actor_id': actor_id,
+            'registration': request['transition_id'], 'request_digest': _digest(request),
+            'registration_token': registration_token, 'comparison_token': snapshot_object_id(state),
+            'accepted_parent_chain': purpose_chain, 'projection_digest': _review_projection(state),
+            'history_count': len(state['thread_entries']),
+            'history_digest': _digest({'entries': state['thread_entries']}),
+            'receipt_count': len(state['receipts']), 'receipt_digest': _digest(state['receipts'])}
+
+
+def _comparison_history(context, state, request):
+    """Verify the retained prefix using the previous successful readback."""
+    from pma.workmap_current_review import EFFECTS, _effects, guard_review_history
+    count = context['history_count']
+    if (count > len(state['thread_entries'])
+            or _digest({'entries': state['thread_entries'][:count]}) != context['history_digest']):
+        raise TransitionConflict('confirmed comparison history was changed or lost')
+    suffix = state['thread_entries'][count:]
+    tids = {e.get('transition_id') for e in suffix}
+    previous = {t: r for t, r in state['receipts'].items() if t not in tids}
+    if len(previous) != context['receipt_count'] or _digest(previous) != context['receipt_digest']:
+        raise ContextUnknown('intervening updates lack assessable committed history')
+    for entry in suffix:
+        receipt = state['receipts'].get(entry.get('transition_id'))
+        if (entry['kind'] not in EFFECTS or not isinstance(receipt, dict)
+                or receipt.get('result') != 'applied'
+                or receipt.get('recorded_at') != entry['recorded_at']):
+            raise ContextUnknown('intervening comparison history is not assessable')
+        _effects(entry)
+    related, actors = _fixed_review_context(state, request, allow_action_rules=True)
+    guard_review_history(suffix, related, actors, request)
+
+
+def _confirmed_comparison(store, state, request, actor_id, repo, context, registration_token, reconsidered_token):
+    expected = {'store', 'project_id', 'actor_id', 'registration', 'request_digest',
+                'registration_token', 'comparison_token', 'accepted_parent_chain', 'projection_digest',
+                'history_count', 'history_digest', 'receipt_count', 'receipt_digest'}
+    if not isinstance(context, dict) or set(context) != expected:
+        raise TransitionDenied('use the unmodified comparison context from a ready current-Map check')
+    if (context['store'] != _store_binding(store) or context['project_id'] != state['project_id']
+            or context['actor_id'] != actor_id or context['registration'] != request['transition_id']
+            or context['request_digest'] != _digest(request)
+            or (registration_token is not None and registration_token != context['registration_token'])):
+        raise TransitionDenied('confirmed comparison belongs to another Store, participant or registration')
+    for key in ('registration_token', 'comparison_token', 'projection_digest', 'history_digest', 'receipt_digest'):
+        value = context[key]
+        if not isinstance(value, str) or len(value) != 64 or any(c not in '0123456789abcdef' for c in value):
+            raise TransitionDenied('confirmed comparison contains an invalid hash')
+    if any(type(context[key]) is not int or context[key] < 0 for key in ('history_count', 'receipt_count')):
+        raise TransitionDenied('confirmed comparison contains an invalid history boundary')
+    if context['accepted_parent_chain'] != _purpose_chain(state, request):
+        raise TransitionDenied('accepted purpose or Parent changed; renewed scope is required')
+    _comparison_history(context, state, request)
+    selected = reconsidered_token if reconsidered_token is not None else context['comparison_token']
+    if (not isinstance(selected, str) or len(selected) != 64
+            or any(c not in '0123456789abcdef' for c in selected)):
+        raise TransitionDenied('reconsidered token must be a reviewed current snapshot hash')
+    base = state if selected == snapshot_object_id(state) else validate_snapshot(store.read_retained_snapshot(selected))
+    if (snapshot_object_id(base) != selected or base['project_id'] != state['project_id']
+            or base['metadata'].get('store_role') != 'canonical_current'
+            or base['receipts'].get(request['transition_id']) != state['receipts'].get(request['transition_id'])
+            or _purpose_chain(base, request) != context['accepted_parent_chain']):
+        raise TransitionConflict('comparison base differs from the confirmed acceptance')
+    if selected == context['comparison_token']:
+        if (len(base['thread_entries']) != context['history_count']
+                or len(base['receipts']) != context['receipt_count']
+                or _review_projection(base) != context['projection_digest']):
+            raise TransitionConflict('confirmed comparison does not match its snapshot')
+    if base is not state:
+        _comparison_history(context, base, request)
+        _check_current_registration(base, request, actor_id, repo)
+    from pma.workmap_current_review import assess_current_review
+    assessment = ({'status': 'ready', 'impact': 'reconsidered' if reconsidered_token is not None else 'unchanged',
+                   'changes': [], 'history': [], 'review_token': snapshot_object_id(state)}
+                  if base is state else assess_current_review(base, state, request, scope_context=_fixed_review_context))
+    return {**assessment, 'comparison_token': selected}, base
+
+
+def _check_review_gate(store, request: dict, actor_id: str, repo: Path, *,
                       reviewed_fixed_files: bool = False, registration_token: str | None = None,
-                      reviewed_current_map: bool = False, reconsidered_token: str | None = None) -> dict:
+                      reviewed_current_map: bool = False, reconsidered_token: str | None = None,
+                      comparison_context: dict | None = None) -> dict:
     """Read back one committed registration and file versions before release.
 
     The optional local operator input covers fixed subject files only, never
@@ -187,6 +281,8 @@ def check_review_gate(store, request: dict, actor_id: str, repo: Path, *,
         raise TransitionDenied('choose one explicit review subject mode')
     if reconsidered_token is not None and not reviewed_current_map:
         raise TransitionDenied('reconsidered subject requires current-Map review mode')
+    if comparison_context is not None and not reviewed_current_map:
+        raise TransitionDenied('confirmed comparison requires current-Map review mode')
     continuation = reviewed_fixed_files or reviewed_current_map
     if registration_token is not None and not continuation:
         raise TransitionDenied('a retained registration token requires an explicit continuation mode')
@@ -204,6 +300,22 @@ def check_review_gate(store, request: dict, actor_id: str, repo: Path, *,
         if (not isinstance(receipt, dict) or receipt['request_digest'] != _digest(request)
                 or receipt['result'] != 'applied'):
             raise TransitionConflict('registration is absent or different')
+        if comparison_context is not None:
+            result = _check_current_registration(state, request, actor_id, repo)
+            assessment, compared = _confirmed_comparison(store, state, request, actor_id, repo, comparison_context,
+                                                          registration_token, reconsidered_token)
+            result = {**result, **assessment, 'registration_token': comparison_context['registration_token'],
+                      'reviewed_fixed_files': False, 'reviewed_current_map': True}
+            if result['status'] == 'ready':
+                result['comparison_context'] = (copy.deepcopy(comparison_context)
+                    if result['comparison_token'] == comparison_context['comparison_token'] else
+                    _comparison_result(store, compared, request, actor_id, comparison_context['registration_token'],
+                                       comparison_context['accepted_parent_chain']))
+            if store.read().token == committed.token:
+                return result
+            if attempt + 1 == attempts:
+                raise TransitionConflict('canonical Store changed during release check')
+            continue
         if base is None:
             if reviewed_current_map and state['revision'] == receipt['revision']:
                 # Same-version fast path: no retained lookup or delta assessment.
@@ -241,12 +353,53 @@ def check_review_gate(store, request: dict, actor_id: str, repo: Path, *,
             result = {**result, **acknowledge_current_subject(store, reconsidered_token, state, assessment, request,
                                                              scope_context=_fixed_review_context)}
         if store.read().token == committed.token:
-            return {**result, 'registration_token': base_token,
-                    'reviewed_fixed_files': reviewed_fixed_files,
-                    **({'reviewed_current_map': True} if reviewed_current_map else {})}
+            result = {**result, 'registration_token': base_token, 'reviewed_fixed_files': reviewed_fixed_files,
+                      **({'reviewed_current_map': True} if reviewed_current_map else {})}
+            if reviewed_current_map and result['status'] == 'ready':
+                selected = result.get('comparison_token', base_token)
+                compared = state if selected == snapshot_object_id(state) else (
+                    base if selected == snapshot_object_id(base) else validate_snapshot(store.read_retained_snapshot(selected)))
+                result['comparison_token'] = selected
+                result['comparison_context'] = _comparison_result(store, compared, request, actor_id,
+                                                                   base_token, _purpose_chain(base, request))
+            return result
         if attempt + 1 == attempts:
             raise TransitionConflict('canonical Store changed during release check')
     raise TransitionConflict('canonical Store changed during release check')
+
+
+def check_review_gate(store, request: dict, actor_id: str, repo: Path, **options) -> dict:
+    """Expired finite comparison copies require a new judgment, never ready.
+
+    A genuine saved ready result can still be reused after an explicit current
+    reread. If that result is lost as well, use explicit disposition of the old
+    acceptance; do not manufacture a replacement comparison context.
+    """
+    try:
+        return _check_review_gate(store, request, actor_id, repo, **options)
+    except MissingRetainedSnapshot as exc:
+        review_delegation(request, repo)
+        if request['changes'][0]['value']['pin']['actor_id'] != actor_id:
+            raise TransitionDenied('release actor differs from accepted reviewer')
+        committed = store.read()
+        state = validate_snapshot(committed.snapshot)
+        receipt = state['receipts'].get(request['transition_id'])
+        if (not isinstance(receipt, dict) or receipt.get('request_digest') != _digest(request)
+                or receipt.get('result') != 'applied'):
+            raise TransitionConflict('registration is absent or different')
+        result = _check_current_registration(state, request, actor_id, repo)
+        _fixed_review_context(state, request, allow_action_rules=bool(options.get('reviewed_current_map')))
+        context = options.get('comparison_context')
+        if context is not None:
+            _comparison_history(context, state, request)
+        if store.read().token != committed.token:
+            raise TransitionConflict('canonical Store changed during recovery guidance')
+        return {**result, 'status': 'needs_reconsideration', 'impact': 'comparison_unavailable',
+                'review_token': snapshot_object_id(state), 'missing_comparison_token': exc.token,
+                'reviewed_current_map': bool(options.get('reviewed_current_map')),
+                'reviewed_fixed_files': bool(options.get('reviewed_fixed_files')),
+                'recovery': 'reread_current_then_use_saved_ready_context' if context is not None else 'explicitly_cancel_old_acceptance_then_confirm_new_acceptance',
+                'reason': 'A comparison copy expired. Read the current Work, purpose, permissions and necessary reasons; this response is not a ready result or permission.'}
 
 
 def _check_current_registration(state: dict, request: dict, actor_id: str, repo: Path) -> dict:
